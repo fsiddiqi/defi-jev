@@ -1,0 +1,24 @@
+{
+  "name": "phase-1-core",
+  "title": "Phase 1: Core Architecture",
+  "description": "Build the foundation: state models, Jev classifier, risk gates, paper executor, and event system",
+  "status": "complete",
+  "feature_branch": "phase-1-core",
+  "started_date": "2026-09-22",
+  "completed_date": "2026-09-22",
+  "completion_commit": "889924e",
+  "priority": "P0",
+  "owner": "fsiddiqi",
+  "success_metrics": [
+    "14/14 tests passing",
+    "npm run dry-run completes without error",
+    "Simulated profit positive (~$79.5k)",
+    "Build succeeds (npm run build)",
+    "CI/CD passes (linting, tests, build)"
+  ],
+  "dependencies": [],
+  "blocked_by": [],
+  "blocks": [
+    "phase-2-aave"
+  ]
+}
