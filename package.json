@@ -1,0 +1,26 @@
+{
+  "name": "defi-jev-liquidation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "scan": "tsx src/main.ts --scan-only",
+    "paper": "tsx src/main.ts --paper",
+    "real": "tsx src/main.ts --approve",
+    "auto": "tsx src/main.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "viem": "^2.21.0",
+    "zod": "^3.23.0",
+    "dotenv": "^16.4.5",
+    "graphql-request": "^7.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "@types/node": "^22.7.0"
+  }
+}
