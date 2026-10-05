@@ -138,6 +138,13 @@ CMD ["node", "dist/index.ts"]
 - [ ] Real liquidation execution
 - [ ] Transaction mempool monitoring (frontrun/sandwich detection)
 
+> **Read before building Phase 2:** [docs/STRATEGIES.md](docs/STRATEGIES.md) documents why the
+> current build loses money, and
+> [docs/STRATEGY-LANDSCAPE.md](docs/STRATEGY-LANDSCAPE.md) surveys alternative strategies. Key
+> findings: Aave V3 is only $566M of Base's $6.44B TVL (Morpho Blue is 8.3× larger and generates
+> $271.7k/day in fees vs Aave's $32.7k); the Jev classifier does not currently call the API; and
+> a public-mempool poller loses essentially every contested liquidation.
+
 **Phase 3 (Future):** Production hardening
 - [ ] Rate limiting & health checks
 - [ ] Error recovery & retry logic

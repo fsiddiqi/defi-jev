@@ -14,15 +14,29 @@ import {
   emitLiquidationExecuted,
   emitSessionStats,
 } from '@/server/events';
+import { initDashboard } from '@/server/dashboard';
+import { initTelegram, alertSessionStart, alertSessionEnd, alertLiquidation, alertSkipped, alertError } from '@/server/telegram';
 
 async function main() {
   const isDryRun = process.env.DRY_RUN === 'true';
   const useMockJev = !process.env.TYPESAFE_API_KEY;
 
+  // Initialize dashboard (SSE + HTML on port 3000)
+  initDashboard(3000);
+  
+  // Initialize Telegram alerts
+  const telegramEnabled = await initTelegram();
+
   logger.info(`\n🤖 DeFi Jev Bot Starting`);
   logger.info(`📍 Mode: ${isDryRun ? 'DRY RUN' : 'LIVE'}`);
   logger.info(`🧠 Jev: ${useMockJev ? 'MOCK (no API key)' : 'REAL'}`);
+  logger.info(`📊 Dashboard: http://localhost:3000`);
+  logger.info(`📱 Telegram: ${telegramEnabled ? 'enabled' : 'disabled (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)'}`);
   logger.info(`\n---\n`);
+
+  if (telegramEnabled) {
+    await alertSessionStart(isDryRun ? 'DRY RUN' : 'LIVE', useMockJev ? 'MOCK' : 'REAL');
+  }
 
   const opportunities = generateMockLiquidationBatch(5);
 
@@ -48,13 +62,22 @@ async function main() {
 
     if (gateResult.should_execute) {
       try {
-        await paperExecutor.execute(state);
+        const fill = await paperExecutor.execute(state);
         emitLiquidationExecuted(state, jeyDecision, state.profit_after_gas);
+        if (telegramEnabled) {
+          await alertLiquidation(fill, jeyDecision, paperExecutor.getStats());
+        }
       } catch (error) {
         logger.error('❌ Execution failed:', error);
+        if (telegramEnabled) {
+          await alertError('execution', error as Error);
+        }
       }
     } else {
       logger.info(`⏭️  Skipped: ${gateResult.reason}\n`);
+      if (telegramEnabled) {
+        await alertSkipped(state, gateResult.reason);
+      }
     }
 
     await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -75,6 +98,10 @@ async function main() {
   logger.info(`\n✅ Bot completed!\n`);
 
   emitSessionStats(stats);
+  
+  if (telegramEnabled) {
+    await alertSessionEnd(stats);
+  }
 }
 
 main().catch((error) => {

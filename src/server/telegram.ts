@@ -2,11 +2,12 @@ import { logger } from '@/logging';
 import { PaperFill } from '@/execution/paper';
 import { JevDecision } from '@/jev/classifier';
 import { LiquidationState } from '@/state/liquidation-state';
+import type { Telegraf } from 'telegraf';
 
-let bot: any = null;
+let bot: Telegraf | null = null;
 let chatId: string | null = null;
 
-export function initTelegram(): boolean {
+export async function initTelegram(): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const id = process.env.TELEGRAM_CHAT_ID;
   
@@ -16,9 +17,8 @@ export function initTelegram(): boolean {
   }
   
   try {
-    // Dynamic import to avoid requiring telegraf if not configured
-    const { Telegraf } = require('telegraf');
-    bot = new Telegraf(token);
+    const { Telegraf: TelegrafClass } = await import('telegraf');
+    bot = new TelegrafClass(token);
     chatId = id;
     logger.info('✅ Telegram alerts enabled');
     return true;

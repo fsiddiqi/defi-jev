@@ -32,7 +32,7 @@ export function getClassifier() {
 }
 
 export async function askJev(state: LiquidationState): Promise<JevDecision> {
-  const classifier = getClassifier();
+  getClassifier(); // Validates API key exists
   const stateString = formatStateForJev(state);
 
   logger.debug(`\n📊 Asking Jev about liquidation:\n${stateString}`);

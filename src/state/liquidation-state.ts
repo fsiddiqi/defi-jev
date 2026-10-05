@@ -1,5 +1,3 @@
-import { logger } from '@/logging';
-
 export interface LiquidationState {
   collateral_asset: string;
   collateral_amount: string;
