@@ -1,170 +1,186 @@
-# Phase 2: Funding Rate Harvesting (Hyperliquid)
+# Funding Rate Harvesting (Hyperliquid)
 
-Build a delta-neutral funding rate harvesting agent on Hyperliquid, replacing the
-`phase-2-aave` liquidation plan.
+Delta-neutral funding carry agent. Technical detail: [`docs/FUNDING-HARVEST-SPEC.md`](../../../../docs/FUNDING-HARVEST-SPEC.md).
 
-Full technical specification: [`docs/FUNDING-HARVEST-SPEC.md`](../../../../docs/FUNDING-HARVEST-SPEC.md).
-Rationale for abandoning liquidations: [`docs/STRATEGIES.md`](../../../../docs/STRATEGIES.md).
+## The strategy
 
-## Why this replaces phase-2-aave
+Perp futures trade at a small premium to spot. That premium is paid out hourly between long
+and short holders — **longs pay shorts when funding is positive.** Arbitrageurs keep the two
+prices pinned by buying spot and shorting perp, and they get paid for it. A carry trader
+takes the other side of that payment.
 
-The liquidation plan assumed the edge was in writing correct contract calls. It is not.
-Two findings, both verified on-chain and on DefiLlama:
+The agent's position is long spot and short perp, equal size. Price moves on the two legs
+cancel. What remains is the funding.
 
-- **Aave V3 is $566M of Base's $6.44B TVL.** Morpho Blue holds $4.565B and generates
-  $271.7k/day in fees against Aave's $32.7k. The original plan targeted the smallest major
-  lending book on the chain.
-- **Contested liquidations are won on latency, not analysis.** Polling a public RPC and
-  submitting to the public mempool loses essentially every race to searchers with private
-  ordering. A more accurate classifier does not change this.
+```mermaid
+flowchart LR
+  subgraph pos["Delta-neutral position"]
+    S["Long ETH spot"] ---|"equal notional"| P["Short ETH perp"]
+  end
+  F["Hourly funding<br/>+0.0011% typical"] -->|"longs pay shorts"| P
+  U["ETH price moves"] -->|"long gains"| S
+  U -->|"short loses"| P
+  S --> N["Net price P&L ~ 0"]:::neutral
+  P --> N
+  P -->|"actual profit"| W["Funding income"]:::win
 
-A funding carry trade has neither problem. It is latency-insensitive, so the infrastructure
-requirement that makes the liquidation strategy unviable does not apply.
+  classDef win fill:#1b5e20,stroke:#4caf50,color:#fff
+  classDef neutral fill:#37474f,stroke:#78909c,color:#fff
+```
 
-## Verified venue facts
+The premium exists because leverage buyers push perp above spot:
 
-Read from `https://api.hyperliquid.xyz/info` on 2026-10-05. Hyperliquid is **not an EVM
-chain** — `viem` cannot reach it. All access is via REST/WebSocket and the official SDK.
+```mermaid
+flowchart TB
+  A["Leverage demand<br/>pushes perp above spot"] --> B["Funding payments<br/>hourly, longs to shorts"]
+  B --> C["Arbitrageur buys spot,<br/>shorts perp, collects funding"]
+  C -->|"closes the gap"| A
+  B --> W["Carry trader collects<br/>the same funding<br/>9.86%/yr measured"]:::win
 
-| Fact | Value |
+  classDef win fill:#1b5e20,stroke:#4caf50,color:#fff
+```
+
+## What is actually at risk
+
+Price risk is hedged away. Three things are not:
+
+| Risk | Effect |
 |---|---|
-| Perp markets | 234 |
-| ETH `szDecimals` | 4 |
-| ETH `maxLeverage` (exchange-permitted) | 25 |
-| Funding interval | **Hourly** |
-| ETH `markPx` at capture | 2698.5 |
-| ETH 24h notional volume | ~$1.18B |
+| **Funding flips negative** | A short perp position *pays* out. Measured min was −1.73e-5/h. |
+| **Costs** | 30 bps round trip. At mean funding that needs **~267 hours (~11 days)** of holding to recover. |
+| **Margin** | The short leg can be liquidated before funding arrives. |
 
-`metaAndAssetCtxs` provides, per market: `funding` (current hourly), `premium`, `markPx`,
-`oraclePx`, `midPx`, `impactPxs` (size-tiered slippage), `openInterest`, `dayNtlVlm`.
-`impactPxs` and `premium` feed the sizing and basis inputs directly.
+That middle row drives the whole design: **this is a low-frequency strategy wearing a
+high-frequency costume.** An agent that churns daily loses money on costs alone. Holding
+time is the dominant variable, which is why Jev must predict duration and not just
+direction.
 
-### API constraints that shape the implementation
+Return on *capital* is also below the headline rate. Funding accrues on perp notional, but
+capital is spot notional plus margin, so at 2–3× leverage the realised rate is
+`f / (1 + 1/L)` ≈ **6.6–7.4%/yr** against the 9.86% raw rate. Benchmarks must be compared
+like for like.
 
-- **`fundingHistory` returns at most 500 points** and silently truncates wider windows. A
-  30-day request returned Sept 5–26. **History must be paginated** — ~18 calls per year.
-- `candleSnapshot` takes `req: { coin, interval, startTime, endTime }`. Intervals observed:
-  `1m`, `1h`. Point-in-time funding plus OHLCV at 1m is sufficient for §9.
-- 90-day `zscore` windows require a warm cache. Cannot be computed at cold start.
+## Agent loop
 
-### Measured baseline
+Jev gates entries only. Everything that protects capital is deterministic code, because an
+LLM round trip is 200–1500 ms and a margin cascade takes seconds.
 
-500 hourly funding observations:
+```mermaid
+flowchart TD
+  subgraph det["Deterministic — 2s and 10s"]
+    M["Margin monitor<br/>every 2s"] --> B["Circuit breakers<br/>halt or unwind"]
+    A["Account state<br/>every 10s"] --> B
+  end
+  subgraph jev["Jev — every 5 min, entries only"]
+    G["Code pre-gates<br/>zscore, percentile"] --> J["Jev<br/>confidence, duration"]
+    J --> C["Enter, clamped to caps"]
+    J -.->|"failure means no entry"| N["Do nothing"]:::neutral
+  end
 
-| Metric | Value |
-|---|---|
-| Mean hourly funding | 1.125e-5 |
-| **Mean annualized** | **9.86%** |
-| Hours positive | 470 / 500 (94%) |
-| Max hourly | 5.12e-5 → 44.8% annualized |
-| Min hourly | -1.73e-5 |
+  classDef neutral fill:#37474f,stroke:#78909c,color:#fff
+```
 
-**Passive delta-neutral hold yields ~9.9%/yr gross.** That is the benchmark the agent must
-beat after gas, fees, and the 30 bps round-trip slippage budget. A strategy that earns less
-than this has added nothing, regardless of Sharpe.
+## Venue constraints
 
-## Reuse vs. rewrite
+Read from `https://api.hyperliquid.xyz/info`, 2026-10-05. Hyperliquid is **not EVM** —
+`viem` cannot reach it; the official SDK is the only client.
 
-Not from scratch. Roughly half the existing code carries over.
+- 234 perp markets. ETH `szDecimals` 4. Exchange permits 25× leverage; we use 2–3×.
+- Funding accrues **hourly**.
+- **`fundingHistory` hard-caps at 500 points and silently truncates.** A 30-day request
+  returned only Sept 5–26. History must be paginated (~18 calls/year).
+- 90-day z-score windows need a warm cache — unavailable at cold start.
 
-**Reuse as-is:** `src/logging.ts` (pino + file transport),
-`src/server/telegram.ts` (alert helpers), `src/server/events.ts` (event bus — §8.3 of the
-spec relies on it).
+## Hard constraints
 
-**Adapt:** `src/server/dashboard.ts` (728 lines, the largest asset in the repo — SSE pattern
-transfers; the domain fields become positions and margin state instead of liquidations),
-`src/execution/risk-gates.ts` (the *pattern* — hardcoded limits, never AI-gated — transfers;
-the liquidation gate logic does not).
-
-**Rewrite:** funding aggregation, position lifecycle, margin monitoring, cross-venue
-execution, Postgres state, OpenRouter client, the backtester.
-
-## Non-negotiable design constraints
-
-1. **Jev gates entries only.** Exits, rebalancing, and every circuit breaker are
-   deterministic code. An LLM round-trip is 200–1500ms; a margin cascade takes seconds.
-2. **Cadences stay asymmetric.** Jev at 5 min, account state at 10s, margin monitor at 2s.
+1. **Jev gates entries only.** Exits, rebalancing, and all circuit breakers are code.
+2. **Cadences stay asymmetric:** Jev 5 min, account state 10 s, margin monitor 2 s.
 3. **Jev failures fail closed.** No decision → no entry. Never a permissive default.
-4. **Backtest checks liquidation against candle high/low, not close.** Zero simulated
-   liquidations is a hard gate.
-5. **Leverage 2–3×, never the 25× the exchange permits.**
+4. **Backtest liquidation against candle high/low, not close.** Zero simulated liquidations
+   is a hard gate.
+5. **Leverage 2–3×**, never the 25× the exchange permits.
 6. **Model output is clamped by hard caps in code**, below the model in the stack.
 
-## Acceptance Criteria
+## Acceptance criteria
 
-### Phase 2.1 — Backtester (must land before any execution code)
+```mermaid
+flowchart LR
+  S1["Stage 1<br/>Backtester"] -->|"BLOCKING<br/>beat passive hold"| S4["Stage 4<br/>Execution"]
+  S1 --> S2["Stage 2<br/>Data pipeline"]
+  S2 --> S3["Stage 3<br/>Jev"]
+  S3 --> S4
+  S4 --> S5["Stage 5<br/>Live validation"]
+  S5 --> S6["Stage 6<br/>Calibration"]
+```
 
-- [ ] Paginated `fundingHistory` fetch, ≥12 months, with verified point counts per page
-- [ ] OHLCV fetch at 1m for ETH and SOL
-- [ ] Carry simulator: funding accrued at exact interval timestamps, not averaged
+### Stage 1 — Backtester (must land before any execution code)
+
+- [ ] Paginated `fundingHistory`, ≥12 months, verified point counts per page
+- [ ] OHLCV at 1m for ETH and SOL
+- [ ] Carry simulator accruing funding at exact interval timestamps, not averaged
 - [ ] **Intrabar liquidation check against candle high/low**
 - [ ] Fee + slippage model (taker both legs, 10 bps entry/exit, 25 bps rebalance)
-- [ ] Range-selection policy implementing §1.2 of the spec, evaluated out-of-sample
-- [ ] Report emits every §9.4 metric
-- [ ] **Must beat passive delta-neutral hold (9.86%/yr gross) on net ROI**
-- [ ] Must show ≥200 simulated trades and 0 simulated liquidations
+- [ ] Range-selection policy, evaluated out-of-sample
+- [ ] **Beats passive delta-neutral hold on net ROI**
+- [ ] **≥200 simulated trades, 0 simulated liquidations**
 
-### Phase 2.2 — Live data pipeline (no order capability in code)
+### Stage 2 — Live data pipeline (no order capability in code)
 
-- [ ] Funding poller with staleness limits from spec §6.4
-- [ ] Warm 90-day funding cache; survive restart
-- [ ] 2s margin monitor, independent of the AI provider
-- [ ] Spot/perp price reconciliation with 50 bps divergence alarm
-- [ ] Full JSONL decision logging (all schemas in spec §5.1)
-- [ ] Prometheus counters for poll failures, latency, divergence
+- [ ] Funding poller with staleness limits; failed fetch returns `null`, never a stale value
+- [ ] Warm 90-day cache; survives restart without recomputing
+- [ ] 2 s margin monitor, independent of the AI provider
+- [ ] Spot/perp price reconciliation, 50 bps divergence alarm
+- [ ] Full JSONL decision logging
 - [ ] 7 consecutive days without unhandled errors
 
-### Phase 2.3 — Jev integration
+### Stage 3 — Jev integration
 
-- [ ] OpenRouter client with 2s hard timeout
-- [ ] `response_format: json_object`, temperature 0.1
-- [ ] Zod validation + position cap clamp at the boundary
+- [ ] OpenRouter client, 2 s hard timeout, `response_format: json_object`, temperature 0.1
+- [ ] Schema validation + position cap clamp at the boundary
 - [ ] **Fail-closed on every error path**
 - [ ] Confidence, `predicted_duration_hours`, `predicted_roi_pct`, `invalidators` persisted
 - [ ] Code pre-gates run **before** spending a Jev call
 - [ ] `jev_error` logged with fallback recorded
 
-### Phase 2.4 — Execution
+### Stage 4 — Execution
 
-- [ ] Both legs simulated successfully **before** either live order
+- [ ] Both legs simulated **before** either live order
 - [ ] Dual-leg-failure recovery: retry hedge, then **unwind spot** rather than sit naked
-- [ ] All circuit breakers from spec §7.2 armed from the first trade
-- [ ] Stress test (5/10/20/35% shock ladder) gates every entry
+- [ ] All circuit breakers armed from the first trade
+- [ ] Stress ladder (5/10/20/35% shock) gates every entry
 - [ ] Position limit $5,000, one position, ETH only
+- [ ] Manual daily reconciliation
 
-### Phase 2.5 — Live validation
+### Stage 5 — Live validation
 
 - [ ] ≥20 completed live positions
 - [ ] Realized ROI within ±30% of backtest
 - [ ] Zero unresolved leg-failure incidents
-- [ ] Manual daily position reconciliation
 
-### Phase 2.6 — Calibration
+### Stage 6 — Calibration
 
 - [ ] ≥100 live positions
 - [ ] ECE < 0.10, Brier < 0.21
 - [ ] Confidence buckets strictly monotonic
 - [ ] Duration MAPE < 40%
 
-## Explicitly out of scope
+## Out of scope
 
 Multi-exchange arbitrage, order book modelling, market making, HFT, cross-collateral
-optimization, governance participation, live multi-venue support (single venue until
-calibrated).
+optimization, governance, multi-venue support before calibration.
 
-## Success Criteria
+## Success
 
-The strategy succeeds if **confidence is informative and net ROI beats passive hold after
-all costs.** Not if it made money — that could be a favorable regime — and not if it ran
-without errors, since a bot that faithfully loses has still failed.
+Confidence is informative **and** net ROI beats passive hold after all costs. Not "it made
+money" — that could be a favourable regime. Not "it ran without errors" — a bot that
+faithfully loses has failed.
 
 If the calibration curve is flat after 200 trades, Jev is decoration and the correct action
-is to remove it: a threshold rule on funding `zscore` achieves the same result for a
-fraction of the latency and cost. That is a valid outcome of this phase.
+is to remove it for a z-score threshold rule. That is a valid outcome.
 
-## Failure Conditions — stop and reassess
+## Failure — stop and reassess
 
-- Backtest net ROI < passive hold → the strategy has no edge; do not proceed
-- Any simulated liquidation → sizing is wrong; fix before proceeding
-- Live ROI outside ±30% of backtest → backtest is not modeling reality; stop
-- Jev calibration flat after 200 trades → remove Jev, keep the threshold rule
+- Backtest net ROI below passive hold → no edge, do not proceed
+- Any simulated liquidation → sizing is wrong
+- Live ROI outside ±30% of backtest → the backtest is not modelling reality
+- Flat calibration after 200 trades → remove Jev, keep the threshold rule

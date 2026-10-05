@@ -884,7 +884,7 @@ If any fail, fix the model or abandon. Do not proceed and hope live differs favo
 
 ---
 
-## 10. Phased Launch Plan
+## 10. Delivery Sequence
 
 ### Weeks 1–2 — Paper trading, no capital
 

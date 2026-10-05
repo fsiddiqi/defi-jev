@@ -22,10 +22,8 @@ conductor/tracks/
 |---|---|---|---|
 | [003-funding-harvesting](tracks/active/003-funding-harvesting/) | 🟢 active | P1 | Delta-neutral funding carry on Hyperliquid |
 
-Backtester-first. Phase 2.1 is a blocking gate: it must beat passive delta-neutral hold
-(~9.86%/yr gross) before any execution code is written. Replaces the `phase-2-aave`
-liquidation plan — see [docs/STRATEGIES.md](../docs/STRATEGIES.md) for why liquidations have
-negative expected value at current infrastructure.
+Backtester-first. Stage 1 is a blocking gate: it must beat passive delta-neutral hold
+(~9.9%/yr gross) before any execution code is written.
 
 ## Backlog
 
@@ -46,11 +44,9 @@ None. Criteria for what qualifies are documented in
 
 ## Superseded
 
-- **phase-2-aave** — real Aave integration. Never started. Superseded by `003-funding-harvesting`
-  because Aave V3 is $566M of Base's $6.44B TVL while Morpho Blue holds $4.565B at
-  $271.7k/day in fees against Aave's $32.7k, and contested liquidations are decided on
-  latency rather than analysis. Retained in git history; reactivate only if funding fails its
-  backtest gate.
+- **phase-2-aave** — Aave liquidation bot. Never started. Superseded by
+  `003-funding-harvesting`. Retained in git history; reactivate only if funding fails its
+  Stage 1 gate.
 
 ## Naming convention
 

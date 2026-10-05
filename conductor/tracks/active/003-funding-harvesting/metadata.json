@@ -1,7 +1,7 @@
 {
   "name": "003-funding-harvesting",
   "title": "Funding Rate Harvesting (Hyperliquid)",
-  "description": "Delta-neutral funding rate harvesting agent on Hyperliquid, replacing phase-2-aave. Jev gates entries; deterministic code governs exits and all safety controls. Backtester-first sequencing.",
+  "description": "Delta-neutral funding rate harvesting agent on Hyperliquid, replacing the Aave liquidation plan. Jev gates entries; deterministic code governs exits and all safety controls. Backtester-first sequencing.",
   "status": "active",
   "feature_branch": "003-funding-harvesting",
   "started_date": "2026-10-05",
@@ -27,9 +27,7 @@
   ],
   "replaces": {
     "track": "phase-2-aave",
-    "rationale": "Aave V3 is $566M of Base's $6.44B TVL; Morpho Blue holds $4.565B at $271.7k/day fees vs Aave's $32.7k. Contested liquidations are won on latency, not analysis, so a public-RPC public-mempool poller has negative expected value. A carry trade is latency-insensitive. See docs/STRATEGIES.md.",
-    "retained": true,
-    "reactivate_if": "Funding strategy fails its Phase 2.1 backtest gate"
+    "reactivate_if": "Funding strategy fails its Stage 1 backtest gate"
   },
   "venue": {
     "name": "Hyperliquid",

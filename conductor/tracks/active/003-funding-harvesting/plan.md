@@ -1,17 +1,17 @@
-# Phase 2: Funding Rate Harvesting — Implementation Plan
+# Funding Rate Harvesting — Implementation Plan
 
 Spec: [`spec.md`](./spec.md) · Technical spec:
 [`docs/FUNDING-HARVEST-SPEC.md`](../../../../docs/FUNDING-HARVEST-SPEC.md)
 
 ## Status: 📋 NOT STARTED
 
-Sequencing rule: **Phase 2.1 must complete before Phase 2.4 begins.** The backtester is
+Sequencing rule: **Stage 1 must complete before Stage 4 begins.** The backtester is
 cheap and will invalidate or validate the entire agent design. Building execution first means
 paying twice if the strategy has no edge.
 
 ---
 
-## Phase 2.1 — Backtester (blocking)
+## Stage 1 — Backtester (blocking)
 
 - [ ] Add deps: `pg`, `zod`, `undici` (viem/Hyperliquid SDK come in 2.4)
 - [ ] `src/hyperliquid/client.ts` — REST wrapper for `api.hyperliquid.xyz/info`
@@ -34,7 +34,7 @@ paying twice if the strategy has no edge.
 > If the gate fails, stop. Record the result and reassess the strategy before writing any
 > execution code.
 
-## Phase 2.2 — Live data pipeline
+## Stage 2 — Live data pipeline
 
 - [ ] `src/agents/funding-agent.ts` — three independent cadences (do not unify)
 - [ ] `setInterval(marginMonitor, 2000)` — **no AI dependency, no OpenRouter dependency**
@@ -48,7 +48,7 @@ paying twice if the strategy has no edge.
 - [ ] Prometheus counters: poll failures, latency, divergence, margin distance
 - [ ] Run 7 days, zero unhandled errors
 
-## Phase 2.3 — Jev integration
+## Stage 3 — Jev integration
 
 - [ ] `src/jev/client.ts` — OpenRouter, `temperature: 0.1`, `response_format: json_object`
 - [ ] 2s hard timeout via `AbortSignal`
@@ -60,7 +60,7 @@ paying twice if the strategy has no edge.
 - [ ] Persist confidence, duration, ROI forecast, `invalidators`
 - [ ] Record `jev_error` with latency, retry count, fallback
 
-## Phase 2.4 — Execution
+## Stage 4 — Execution
 
 - [ ] `@hyperliquid/sdk` (Hyperliquid is **not EVM** — `viem` cannot reach it)
 - [ ] Private key in env only. Never logged, never in a JSONL line
@@ -74,14 +74,14 @@ paying twice if the strategy has no edge.
 - [ ] Limits: $5,000 notional, 1 position, ETH, 2–3× leverage
 - [ ] Daily manual reconciliation
 
-## Phase 2.5 — Live validation
+## Stage 5 — Live validation
 
 - [ ] 20+ completed positions
 - [ ] Realized ROI within ±30% of backtest
 - [ ] Zero unresolved leg-failure incidents
 - [ ] Verify `max_adverse_excursion` never approaches liquidation distance
 
-## Phase 2.6 — Calibration
+## Stage 6 — Calibration
 
 - [ ] ≥100 live positions
 - [ ] Confidence calibration table (bucket → actual win rate)
@@ -93,7 +93,7 @@ paying twice if the strategy has no edge.
 
 ---
 
-## Bugs inherited from phase 1
+## Bugs inherited from 001-core-architecture
 
 These are documented in `docs/STRATEGIES.md` and are **not** carried into the new modules.
 The domain code is being rewritten, which disposes of them. Recording so they are not
@@ -109,12 +109,10 @@ reintroduced by copy-paste:
 - [ ] Profit model used an 8% bonus against the real 5%, ignored the close factor, the
       protocol fee, and the collateral→debt swap entirely
 
-## Predecessor tracks
+## Dependencies
 
-- [ ] `phase-2-aave` — superseded, never started. Rationale in `spec.md`. Retained in git
-      history; revive only if funding fails its Phase 2.1 gate
 - [x] `001-core-architecture` — [closed](../../closed/001-core-architecture/). Complete in
-      `889924e`. Infrastructure reused here; liquidation domain logic rewritten
+      `889924e`. Infrastructure reused here
 - [x] `002-observability-alerting` — moved to
       [backlog](../../backlog/002-observability-alerting/). Dashboard, Telegram, and file
       logging shipped in `b1ec7e7`; remaining depth work (`src/metrics.ts`, `/metrics`,
