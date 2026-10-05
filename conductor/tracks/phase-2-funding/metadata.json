@@ -1,0 +1,91 @@
+{
+  "name": "phase-2-funding",
+  "title": "Phase 2: Funding Rate Harvesting (Hyperliquid)",
+  "description": "Delta-neutral funding rate harvesting agent on Hyperliquid, replacing phase-2-aave. Jev gates entries; deterministic code governs exits and all safety controls. Backtester-first sequencing.",
+  "status": "not_started",
+  "feature_branch": "phase-2-funding",
+  "started_date": null,
+  "completed_date": null,
+  "completion_commit": null,
+  "priority": "P1",
+  "owner": "fsiddiqi",
+  "success_metrics": [
+    "Backtest net ROI beats passive delta-neutral hold (9.86%/yr gross) after all costs",
+    "Backtest shows >=200 simulated trades and zero simulated liquidations",
+    "7 days live pipeline operation without unhandled errors",
+    ">=20 completed live positions with realized ROI within +/-30% of backtest",
+    "Confidence calibration ECE < 0.10 and Brier < 0.21 over >=100 positions",
+    "Confidence buckets strictly monotonic across all buckets"
+  ],
+  "dependencies": [
+    "phase-1-core",
+    "phase-1.5-monitoring"
+  ],
+  "blocked_by": [],
+  "blocks": [
+    "phase-3-production"
+  ],
+  "replaces": {
+    "track": "phase-2-aave",
+    "rationale": "Aave V3 is $566M of Base's $6.44B TVL; Morpho Blue holds $4.565B at $271.7k/day fees vs Aave's $32.7k. Contested liquidations are won on latency, not analysis, so a public-RPC public-mempool poller has negative expected value. A carry trade is latency-insensitive. See docs/STRATEGIES.md.",
+    "retained": true,
+    "reactivate_if": "Funding strategy fails its Phase 2.1 backtest gate"
+  },
+  "venue": {
+    "name": "Hyperliquid",
+    "chain": "hyperliquid",
+    "evm_compatible": false,
+    "viem_supported": false,
+    "client": "@hyperliquid/sdk",
+    "api": "https://api.hyperliquid.xyz/info",
+    "funding_interval": "hourly",
+    "notes": "234 perp markets. ETH szDecimals 4, exchange maxLeverage 25 (we use 2-3x). fundingHistory caps at 500 points and silently truncates wider windows, so history must be paginated."
+  },
+  "verified_baseline": {
+    "captured_date": "2026-10-05",
+    "base_block": 52214428,
+    "mean_hourly_funding": 1.125e-5,
+    "mean_annualized_pct": 9.86,
+    "hours_positive": "470/500",
+    "max_hourly_funding": 5.12e-5,
+    "min_hourly_funding": -1.73e-5,
+    "benchmark": "Passive delta-neutral hold yields ~9.86%/yr gross. This is the hurdle the agent must clear after gas, fees, and 30bps round-trip slippage."
+  },
+  "constraints": [
+    "Jev gates entries only; exits and all circuit breakers are deterministic code",
+    "Polling cadences stay asymmetric: Jev 5min, account state 10s, margin monitor 2s",
+    "Jev failures fail closed - no decision means no entry",
+    "Backtest checks liquidation against candle high/low, not close",
+    "Leverage capped at 2-3x, never the exchange-permitted 25x",
+    "Model output clamped by hard caps in code, below the model in the stack"
+  ],
+  "out_of_scope": [
+    "multi-exchange arbitrage",
+    "order book modelling",
+    "market making",
+    "HFT",
+    "cross-collateral optimization",
+    "governance participation",
+    "live multi-venue support before calibration"
+  ],
+  "reuse": {
+    "as_is": [
+      "src/logging.ts",
+      "src/server/telegram.ts",
+      "src/server/events.ts"
+    ],
+    "adapt": [
+      "src/server/dashboard.ts",
+      "src/execution/risk-gates.ts"
+    ],
+    "rewrite": [
+      "funding aggregation",
+      "position lifecycle",
+      "margin monitoring",
+      "execution",
+      "Postgres state",
+      "OpenRouter client",
+      "backtester"
+    ]
+  }
+}
