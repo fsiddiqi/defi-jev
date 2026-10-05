@@ -15,15 +15,20 @@ paying twice if the strategy has no edge.
 
 - [ ] Add deps: `pg`, `zod`, `undici` (viem/Hyperliquid SDK come in 2.4)
 - [ ] `src/hyperliquid/client.ts` — REST wrapper for `api.hyperliquid.xyz/info`
-- [ ] **Test:** `fundingHistory` pagination. **Verified constraint: hard cap of 500 points
-      per request, silently truncating wider windows.** Assert page count and continuity
-- [ ] `src/hyperliquid/funding.ts` — paginated ≥12mo fetch → Postgres
+- [ ] **Test:** `fundingHistory` pagination (§6.6). **Verified constraint: hard cap of 500
+      points per request, silently truncating wider windows — a 30-day request returned only
+      Sept 5–26, with no error.** Assert all five: ≤500 per page, contiguous, monotonic,
+      full coverage, no duplicate `ts`
+- [ ] `src/hyperliquid/funding.ts` — paginated ≥12mo fetch → Postgres (§6.5)
+- [ ] **Test:** cold start refuses to arm below `MIN_FEASIBLE_MARKETS`; restart gap-fills
+      rather than rebuilding from zero
 - [ ] `src/hyperliquid/ohlcv.ts` — 1m candles for ETH + SOL
 - [ ] `src/backtest/carry-sim.ts` — funding accrued at **exact interval timestamps**
 - [ ] **Test:** intrabar liquidation vs. candle high/low. Fixture: short at 3400, liq 3450,
       candle high 3520, close 3390 → must report LIQUIDATED, not "closed fine"
 - [ ] `src/backtest/costs.ts` — taker fees both legs, 10bps entry/exit, 25bps rebalance
-- [ ] `src/backtest/range-policy.ts` — §1.2 entry conditions, evaluated out-of-sample
+- [ ] `src/backtest/range-policy.ts` — sizing policy (§3.6), evaluated out-of-sample against
+      fixed 2×, fixed 3×, and no-viability-filter variants. Record which variant wins
 - [ ] `src/backtest/report.ts` — emits every §9.4 metric
 - [ ] **Test:** known-answer fixture on 500h of real funding data → mean annualized must
       reproduce ~9.86%

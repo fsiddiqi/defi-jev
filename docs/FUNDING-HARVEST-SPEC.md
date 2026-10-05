@@ -11,6 +11,147 @@ does not kill this one. That asymmetry is the reason to build it.
 
 ---
 
+## Primer: what funding rate harvesting actually is
+
+Read this before §0. It is short, and one of its numbers is lower than the target in §12 —
+so reading it changes how §12 should be read.
+
+### The instrument
+
+A **perpetual swap** tracks an asset's spot price with no expiry and no delivery. You hold a
+position that gains and loses with the price, and you close it whenever you like.
+
+Because nothing ever settles, nothing mechanically forces the contract price back to the spot
+price. A perpetual can trade at any premium or discount, indefinitely. That gap is the entire
+subject of this document.
+
+### Why funding exists
+
+Leverage demand pushes the perp above spot, and the exchange prices that imbalance with a
+periodic payment between the two sides.
+
+```mermaid
+flowchart TD
+  A["A buyer wants ETH exposure<br/>now, without buying 1 ETH"] --> B["Buys a perp<br/>no expiry, no delivery"]
+  B --> C["Perp trades at a premium<br/>to spot"]
+  C --> D["Longs pay shorts,<br/>hourly, on the notional"]
+  D --> E["A carry trader buys spot<br/>and shorts the perp at the premium"]
+  E -->|"their buying pushes the premium down"| C
+  D --> F["Premium, and so the funding rate,<br/>falls until the two prices converge"]
+
+  classDef win fill:#1b5e20,stroke:#4caf50,color:#fff
+  classDef neutral fill:#37474f,stroke:#78909c,color:#fff
+  class F win
+  class C neutral
+```
+
+Two consequences that matter more than they look:
+
+1. **The premium is a pressure, not an opportunity.** It exists because leverage buyers want
+   exposure now and will pay for it. That demand is the source of the yield.
+2. **Funding is a transfer, not a print.** It nets to zero across all traders. Every payment
+   to a carry trader is a payment out of someone else's position. There is no new money here
+   — there is a business model, and you are on the profitable side of it.
+
+### The trade
+
+You are paid to hold two opposing positions. Nothing about it is clever; the work is in the
+price feed, the margin, and the costs.
+
+| Leg | Position | Funding effect |
+|---|---|---|
+| Spot | Long $33,333 of ETH | None |
+| Perp | Short $33,333 of ETH | Receives funding hourly |
+
+**Price risk is not removed by this. It is cancelled.** A 5% rally lifts the spot leg by
+$1,667 and loses the perp leg $1,667. The position is worth the same either way, and you are
+paid $0.375/hour for holding it.
+
+```mermaid
+flowchart LR
+  subgraph Up["ETH +5%"]
+    U1["Spot +$1,667"] --> U2["Net +$0"]
+  end
+  subgraph Dn["ETH -5%"]
+    D1["Spot -$1,667"] --> D2["Net +$0"]
+  end
+  U2 --> R["Only the funding<br/>and the costs decide"]
+  D2 --> R
+
+  classDef ok fill:#1b5e20,stroke:#4caf50,color:#fff
+  class R ok
+```
+
+The reason this is worth doing at all: **the short leg cannot be liquidated by an ordinary
+move.** At 2× the perp margin is half the notional, so the short survives a **50% adverse
+move** against it before the margin is gone; at 3×, **33%**. An asset that can move 33% inside
+a day exists, but a *delta-neutral* position where one leg is already short the other has to
+diverge before any of this matters. Price is not the risk. §0.3 is.
+
+### Worked example
+
+$50,000 of capital, the measured mean hourly funding of `1.125e-5`, and nothing else moving.
+
+| | 2× | 3× |
+|---|---|---|
+| Perp notional | $33,333 | $37,500 |
+| Long spot | $33,333 | $37,500 |
+| Perp margin | $16,667 | $12,500 |
+| **Capital committed** | **$50,000** | **$50,000** |
+| Funding received | $0.375/h | $0.422/h |
+| Annual income | $3,285 | $3,696 |
+| **Return on capital** | **6.57%** | **7.39%** |
+
+Note what is *not* in that table: the interest on the margin, the spot custodian's fees, the
+$0.375/h that stops if funding goes negative, and the fact that funding was positive in 470
+of the last 500 hours — not all 500. On this venue, measured, the negative tail is thin. Do
+not assume that holds in a stressed regime.
+
+### Why the headline number is a trap
+
+Funding accrues on the **perp notional**, but the capital you had to commit is the spot
+purchase *plus* the margin. That is:
+
+```
+return on capital = f / (1 + 1/L)
+```
+
+which is **6.57% at 2×** and **7.39% at 3×** — not the 9.86% annualized rate the raw
+funding implies. Leverage does not create yield here; it only changes which multiple of the
+same yield lands on your equity, and the divisor eats most of the gain. The 2→3× step buys
+**0.8 percentage points**.
+
+Three consequences, each of which constrains the design more than any risk parameter does:
+
+- **§12's ">8% annualized" target is above the ceiling.** It cannot be met by this strategy on
+  this venue at this funding rate, and no amount of cleverness in the agent changes that. The
+  honest gate is the one already stated at Stage 1: **net ROI above zero, versus passive
+  hold.**
+- **Costs must stay far below 6.6%.** Recovering one 30 bps round trip takes **267 hours —
+  11 days** of holding. Two round trips a month is a full year of gross yield spent on
+  slippage. This is why holding time is a first-class variable and not an afterthought.
+- **The ceiling is structural.** As carry traders compete, funding converges toward the base
+  rate minus friction. The 9.86% is a snapshot, and its long-run level is the thing to watch,
+  not the funding on any given day.
+
+### So where does the money actually come from?
+
+Not from predicting anything. It comes from three places, and only the third is interesting:
+
+1. **The rate itself.** ~6.6–7.4%/yr gross on capital, at current funding.
+2. **Not churning.** The dominant risk is not a bad trade, it is paying 30 bps to take a
+   267-hour position. Most of the skill here is *not trading*.
+3. **Choosing which premiums to hold, and for how long.** Selecting entries that stay positive
+   and avoiding ones that flip, so realized duration beats the average. This is the only
+   source of differentiation, and it is what §1 exists to produce.
+
+The value of an agent here is therefore mostly **cost avoidance and selection, not
+alpha** — which is a lower, more honest ambition than "find mispricing", and the reason §12's
+real criterion is *beat passive hold* rather than a headline return number. If the ranking in
+§1 turns out to be uninformative, passive hold wins, and §12 says that is a valid outcome.
+
+---
+
 ## 0. Core design principles
 
 Read this section before the rest. It dictates everything downstream.
@@ -65,6 +206,40 @@ If spot and perp are on different venues, you accept:
 
 Rule: **the perp leg must always be over-collateralized by a margin that survives a single
 adverse candle**, not merely a static margin ratio. See §3.5.
+
+---
+
+### 0.4 The dashboard shows only what is actually happening
+
+**The UI renders active strategies only, and never synthetic data.** This is a correctness
+constraint, not a presentation preference.
+
+Three distinct states, and the UI must never blur them:
+
+| State | Meaning | UI treatment |
+|---|---|---|
+| **No active strategy** | Nothing is producing data | Explicit empty state naming the current track and stage. No rows, no zeros implying activity |
+| **Dry run** | Real venue data, execution simulated | Labelled `DRY RUN`. Real prices, simulated fills |
+| **Live** | Real data, real execution | Unlabelled, plus a persistent `LIVE` badge |
+
+Two things are forbidden:
+
+1. **Synthetic data in the UI, ever.** Not mock opportunities, not placeholder rows, not
+   fabricated "waiting" states that imply a pipeline is running. A dashboard showing invented
+   numbers is worse than an empty one, because an empty one is obviously empty.
+2. **A mode label that does not match reality.** This is not hypothetical. The current
+   `askJev` (`src/jev/classifier.ts`) never calls the TypeSafe API — it validates that a key
+   *exists*, then computes local arithmetic with `is_safe` hardcoded to `0.8`.
+   `askJevMock` uses `Math.random()`. The existing dashboard labels this "REAL". Every
+   judgement on screen is fabricated while the label claims otherwise, which is the specific
+   failure this section exists to prevent.
+
+The superseded liquidation pipeline must not be rendered once the funding track is active.
+An operator glancing at a populated dashboard should never be misled about which strategy is
+running — and should never see a strategy that no longer exists.
+
+When no strategy is active, the dashboard says so and names why. Silence is not an acceptable
+representation of "nothing is running."
 
 ---
 
@@ -191,6 +366,31 @@ calibration possible, because it records the rejected cases too.
 `invalidators` is the field to insist on. It forces the model to name conditions that would
 void its own thesis, and code checks them (§2.4). A model that cannot say what would falsify
 its call has not reasoned about it.
+
+### 1.5 Universe feasibility constraints
+
+Not all 234 perp markets are tradeable, and §1.2's "code does not judge quality" does not
+mean code admits everything. The distinction is that these are feasibility tests, not
+attractiveness tests — each answers "can this trade exist?", not "is this trade good?".
+
+Applied before enumeration reaches Jev:
+
+| Constraint | Rule | Rationale |
+|---|---|---|
+| Funding history depth | ≥ 90 days continuous | z-score and percentile are undefined without it |
+| Bid-ask spread | ≤ 10 bps | Above this, §4.4's slippage budget is fiction |
+| Open interest | ≥ $10m | Thin books liquidate you before funding pays |
+| Listing age | > 30 days | New listings have no usable percentile |
+| Mark/oracle freshness | < 60s | Stale marks corrupt liquidation distance |
+| Spot venue coverage | Long leg must be reachable | Half the hedge is not a hedge |
+
+Expect this to reduce the universe to roughly **30–50 markets**. That is the intended
+consequence: a market that fails a feasibility test is one where the trade cannot be executed
+at modelled cost, and Jev's judgement of it is moot.
+
+**Diagnostic that must be logged:** `universe_size` versus `enumerated` on every scan (§5.1).
+If feasibility filtering ever starts selecting on attractiveness, that ratio is where it
+becomes visible.
 
 ---
 
@@ -385,6 +585,72 @@ function liquidationDistance(markPrice, liquidationPrice, perpQty, marginUsd) ->
 Gate: **no position opens unless post-entry distance ≥ 25%.** At 2.2× leverage that is
 roughly a 20% adverse move, which no plausible intrabar reaches.
 
+### 3.6 Position sizing and range-selection policy
+
+Stage 1 gates on evaluating this policy, so it must be concrete rather than implied. Four
+steps, in order. Nothing here reads the viability score except step 1 — sizing is
+volatility- and capital-driven, never model-driven (§1.2).
+
+**Step 1 — select.** From Jev's ranking of the feasible universe (§1.5), take markets in
+descending viability order while `viability >= MIN_VIABILITY_SCORE` and fewer than
+`MAX_CONCURRENT_POSITIONS` are open.
+
+**Step 2 — volatility scalar.**
+
+```
+volScalar = clamp(1.0 - (annualizedVol - 0.40) / 0.60, 0.30, 1.00)
+```
+
+At 40% annualized vol the scalar is 1.0. At 70% it is 0.5. At 100% it floors at 0.30. Volatility
+caps exposure; it does not merely gate it.
+
+**Step 3 — size and derive leverage.**
+
+```
+targetNotional = min(
+  MAX_POSITION_NOTIONAL_USD,
+  availableMargin × MAX_LEVERAGE,
+  equity × volScalar × MAX_LEVERAGE,
+)
+
+marginRequired = targetNotional / MAX_LEVERAGE
+leverage       = clamp(targetNotional / marginRequired, 1.0, MAX_LEVERAGE)
+```
+
+**Leverage is an output, not an input.** It falls out of the notional the caps allow. There is
+no "choose 2× or 3×" decision to make, which is what makes the stress ladder in §7.3
+meaningful: it tests a leverage that sizing already derived rather than one a human picked.
+
+**Step 4 — entry gates, both mandatory.**
+
+```
+Liquidation distance at entry   >= LIQUIDATION_DISTANCE_ENTRY (25%)
+Stress ladder (7.3) preserves  >= MIN_SURVIVING_BUFFER (0.15)
+```
+
+`MIN_SURVIVING_BUFFER = 0.15` is set here because §7.3 referenced `config.minBuffer` without
+a value. At 2× leverage a 35% adverse move consumes ~17.5% of margin, which clears 0.15
+barely; at 3× it consumes ~26% and fails. So the ladder is what actually enforces the 2–3×
+cap in practice, and `MIN_SURVIVING_BUFFER` is the number that does it.
+
+If the ladder fails, **downsize to the notional that survives it**, rather than rejecting
+outright. A 2× position that survives a 35% shock is still a valid carry trade; refusing it
+because 3× failed would discard a good trade for an arithmetic reason.
+
+**Out-of-sample requirement.** Stage 1 must evaluate this policy against simpler variants, not
+just report its own result:
+
+| Variant | Purpose |
+|---|---|
+| Fixed 2× leverage | Baseline |
+| Fixed 3× leverage | Shows whether the vol scalar earns its complexity |
+| `volScalar` sizing, no viability filter | Isolates Jev's contribution |
+| Full policy | Selection + vol scalar + both gates |
+
+If the full policy does not beat fixed-2× after costs, **the volatility scalar and the
+viability filter are both unjustified and should be deleted.** A policy that cannot beat a
+constant is adding risk without adding return. Record which variant won, whatever it is.
+
 ---
 
 ## 4. Execution Architecture
@@ -565,6 +831,13 @@ ECE = Σ (n_b / N) × |predicted_b − actual_b|
 Also track **Brier score** (`mean((outcome − viability)²)`, lower better) and **forecast
 error** (`actual_roi − predicted_roi`) split by predicted duration bucket.
 
+**Sample size for ECE.** ECE < 0.10 on 100 positions is a weak constraint — sampling noise
+alone can produce 0.12 at n=100. Report the standard error alongside ECE, and treat the
+target as **ECE < 0.10 with a 95% CI excluding 0.15**. If the interval straddles 0.15, the
+answer is "not yet measured," not "passed." Bootstrap the bucket assignment rather than
+quoting a point estimate. Note also that §5.4 may remove `duration_hours` outright, which
+would drop the duration-bucket split from this table.
+
 **Every scan is a labelled data point, including the markets not taken.** Because §1.2 moved
 quality judgment entirely into Jev and §5.1 logs the full `scores` map, rejected markets
 become observed negatives. This is a direct benefit of the inverted funnel and it is not a
@@ -662,6 +935,102 @@ OpenRouter is down, margin monitoring is unaffected. That isolation is deliberat
 | Spot price | 15s | 2 min → else block entry |
 | Account state | 10s | 1 min → else block entry |
 | Margin ratio | 2s | — |
+
+### 6.5 History persistence and cold start
+
+A 90-day z-score window is 2,160 hourly points. That cannot be computed at cold start, and
+recomputing it on every restart makes the process unusable.
+
+**Storage: PostgreSQL.** One table, append-only, shared with §8.2's position state.
+
+```sql
+CREATE TABLE funding_history (
+  symbol       text        NOT NULL,
+  ts           timestamptz NOT NULL,
+  funding_rate double precision NOT NULL,
+  PRIMARY KEY (symbol, ts)
+);
+CREATE INDEX funding_history_symbol_ts ON funding_history (symbol, ts DESC);
+
+-- Derived, recomputed rather than trusted
+CREATE TABLE funding_stats (
+  symbol        text PRIMARY KEY,
+  window_hours  int  NOT NULL,
+  mean_rate     double precision NOT NULL,
+  stdev_rate    double precision NOT NULL,
+  zscore        double precision NOT NULL,
+  percentile    double precision NOT NULL,
+  computed_ts   timestamptz NOT NULL
+);
+```
+
+**Staleness.** A row is stale if `now() - ts > 2 × funding_interval`. Stale rows are never
+read as if current: a funding read that fails returns `null`, never the last known value
+(§6.4). Derived stats carry `computed_ts`; if older than one funding interval they are
+recomputed before use.
+
+**Startup validation, and it fails loudly:**
+
+1. Check each candidate symbol has ≥ 90 days of contiguous history.
+2. Symbols failing this are excluded from the universe and the exclusion is logged with a
+   reason. They are not silently dropped.
+3. **If fewer than `MIN_FEASIBLE_MARKETS` (10) symbols pass, the agent refuses to arm
+   entries** and says so. A z-score computed from a partial window is not a z-score, and
+   trading on one is worse than not trading.
+
+**On restart with an existing cache:** gap-fill, do not rebuild. Query the newest `ts` per
+symbol, fetch forward from there, and recompute derived stats over the full 90-day window.
+Recomputing from zero on every restart turns a 2-second start into a 10-minute one.
+
+**Cache integrity.** `funding_history` is derived from a public API and is safe to discard.
+If it is corrupt, delete and re-fetch. `positions` is not — it holds real capital state and
+must never be dropped to recover. If positions and cache disagree on an open position, the
+**position** is authoritative and the cache is rebuilt around it.
+
+### 6.6 Pagination loop for `fundingHistory`
+
+The endpoint returns at most **500 points per request** and silently truncates wider windows.
+A 30-day request returned only Sept 5–26, with no error. Silent truncation is the dangerous
+part: a naive backfill produces a short, plausible-looking history rather than an obvious
+failure.
+
+**Loop, walking backwards from now:**
+
+```
+cursor        = now()
+oldestSeen    = cursor
+allPoints     = []
+perSymbol     = 0
+
+while perSymbol < MAX && (cursor - oldestSeen) >= HISTORY_DAYS * 86_400_000:
+  page = fetch(symbol, endTime = cursor)            # ≤ 500 points
+  if page.length == 0: break                        # reached listing age
+  allPoints += page
+  oldestSeen = min(ts of page)
+  cursor    = oldestSeen - 1                        # 1ms overlap: never a gap
+  perSymbol += 1
+```
+
+**Required assertions.** Each is a test, and each fails the build:
+
+| Assertion | Failure meaning |
+|---|---|
+| `page.length <= 500` | Assumption wrong; the cap changed |
+| Returned points are **contiguous** — no gap between consecutive `ts` | Silent truncation or a hole |
+| Monotonically decreasing `ts` within a page | Unreliable pagination |
+| Union covers `HISTORY_DAYS` contiguously | Incomplete history; symbol fails §6.5 |
+| `allPoints` has no duplicate `ts` | Overlap bug in the cursor arithmetic |
+
+The 1 ms overlap is deliberate. It makes gaps impossible to create, and duplicates are
+removed on insert via `ON CONFLICT DO NOTHING`.
+
+**Budget:** 90 days at hourly is 2,160 points ≈ **5 requests per symbol**. Twelve months is
+~18. Per §1.5 the universe is 30–50 symbols, so a full 12-month warm is roughly 540–900
+requests. Do it once, persist to §6.5, and never repeat it in the hot path.
+
+**If pagination breaks mid-backfill:** abort the backtest. Do not run on a partial history —
+a z-score over 40 days instead of 90 will quietly change every percentile the policy depends
+on, and the result will look fine.
 
 ---
 
@@ -803,17 +1172,36 @@ function validateScan(raw: unknown, universe: SignalBundle[]): JevResponse {
   if (!d.scores || typeof d.scores !== 'object') throw new Error('jev_no_scores');
   if (!Array.isArray(d.shortlist)) throw new Error('jev_no_shortlist');
 
+  const sent = new Set(universe.map((m) => m.symbol));
+
+  // 1. No invented symbols. A score for a market we never sent is a hallucination.
+  for (const symbol of Object.keys(d.scores)) {
+    if (!sent.has(symbol)) throw new Error(`jev_hallucinated_symbol:${symbol}`);
+  }
+
+  // 2. Full coverage. A partial ranking silently promotes unscored markets out of
+  //    contention, which is code judging quality by omission — the inversion §1.2 forbids.
+  //    Coverage is also what makes the rejected-market calibration set complete.
+  const missing = [...sent].filter((s) => d.scores[s] === undefined);
+  if (missing.length > 0) {
+    throw new Error(`jev_incomplete_coverage:${missing.length}:${missing.slice(0, 5).join(',')}`);
+  }
+
+  // 3. Every score present and numeric.
   for (const [symbol, s] of Object.entries(d.scores)) {
     if (typeof s?.viability !== 'number' || Number.isNaN(s.viability)) {
       throw new Error(`jev_bad_viability:${symbol}`);
     }
-    if (s.viability < 0 || s.viability > 1) s.viability = clamp01(s.viability);
+    // Clamp rather than reject: 1.08 is a formatting artefact, not a dangerous signal.
+    // Rejecting a 234-market scan over one is throwing away good work.
+    s.viability = clamp01(s.viability);
+    if (s.duration_hours !== undefined && s.duration_hours <= 0) delete s.duration_hours;
+    if (s.roi_pct !== undefined && !Number.isFinite(s.roi_pct)) delete s.roi_pct;
   }
 
-  // Every shortlisted symbol must exist in the universe we sent, and must have a score.
+  // 4. Shortlist must reference only sent, scored symbols.
   for (const symbol of d.shortlist) {
-    const known = universe.some((m) => m.symbol === symbol);
-    if (!known) throw new Error(`jev_shortlist_unknown_symbol:${symbol}`);
+    if (!sent.has(symbol)) throw new Error(`jev_shortlist_unknown_symbol:${symbol}`);
     if (d.scores[symbol] === undefined) throw new Error(`jev_shortlist_unscored:${symbol}`);
   }
 
@@ -821,18 +1209,20 @@ function validateScan(raw: unknown, universe: SignalBundle[]): JevResponse {
 }
 ```
 
-Three properties matter here, and all of them fail closed:
+Four properties matter here, and all of them fail closed:
 
-1. **Clamp, do not reject, out-of-range viability.** A score of `1.08` is a formatting
-   artefact, not a dangerous signal. Rejecting the whole scan over it throws away 234 good
-   scores.
-2. **The shortlist is validated against what we actually sent.** A hallucinated symbol would
-   otherwise reach the sizing and execution code, which have no way to know it was invented.
-3. **A shortlisted symbol with no score is an error**, because ranking must be total over
-   the shortlist.
+1. **No hallucinated symbols.** Scores for markets never sent are rejected outright — they
+   would otherwise reach sizing and execution, which cannot know they were invented.
+2. **Coverage is mandatory.** Partial output is the failure mode that matters most here: a
+   market Jev chose not to score is silently excluded from ranking, so code is making the
+   quality call. Reject the scan instead.
+3. **Clamp, do not reject, out-of-range scores.** `1.08` is noise; discarding 234 valid scores
+   over it is the worse error.
+4. **Optional fields are dropped, not trusted.** A non-positive `duration_hours` or non-finite
+   `roi_pct` is deleted rather than allowed to reach a sizing calculation.
 
-There is no default ranking. If the scan throws, the previous ranking keeps its age and
-eventually goes stale, and §2.1's staleness bound stops entries. Uncertainty closes the
+There is no default ranking and no partial acceptance. If the scan throws, the previous
+ranking keeps its age, goes stale, and §2.1's bound stops entries. Uncertainty closes the
 position.
 
 ### 8.2 State storage
@@ -962,16 +1352,38 @@ tokens per scan:
 | Every 10s | 8,640 | ~$6.22 | 65% |
 | Every 1s | 86,400 | ~$62 | **6.5×** |
 
-The cadence choice is an economic decision, not a performance one. Trigger-based scanning is
-what makes the full-universe design affordable; a timer-based scan at 10s would consume most
-of the gross return.
+**Model tier is the dominant variable, and it is currently unmeasured.** The table above
+assumes `$0.06/M` — a small hosted model. A capable reasoning model at `$3–15/M` is 50–250×
+that, and full-universe scanning stops being affordable at any trigger rate. The honest
+statement is that **the architecture's viability depends on model tier in a way we have not
+yet measured.**
 
-**Required instrumentation:** `scan.tokens_in`, `scan.tokens_out`, and `scan.cost_usd` on
-every scan event (§5.1), plus a daily cumulative counter with an alert at 5% of gross. Per-call
-cost is an assumption until measured against the real prompt — it varies roughly 10× across
-OpenRouter models, so model choice is itself a cost decision. If scans become frequent
-enough that cost matters, the lever is prompt caching on a stable system prefix, not a
-narrower universe.
+| Tier | ~$/M in | Est. $/scan at 23k tokens | Share of $50k gross/day at 200 scans/day |
+|---|---|---|---|
+| Small hosted | $0.05–0.10 | ~$0.0015 | <1% |
+| Mid | $0.30–0.60 | ~$0.010 | 20% |
+| Capable reasoning | $3–15 | ~$0.10–0.40 | 200–800% — **not viable** |
+
+Note the token count here is higher than §8.4's earlier estimate: at ~100 tokens per market
+state (symbol, funding, z-score, percentile, persistence, vol, basis) 234 markets is ~23k
+input, not ~11.5k. The earlier figure is the optimistic bound and should be treated as such.
+
+**Required instrumentation:** `scan.tokens_in`, `scan.tokens_out`, `scan.cost_usd`, and
+`scan.model` on every scan event (§5.1), a daily cumulative counter, and a hard alert at 5%
+of gross. **Measure this before Stage 2** — it may force a model tier decision, and possibly
+the §1.5 universe cut, earlier than planned.
+
+If cost binds, the levers in order of preference:
+
+1. **Prompt caching** on a stable system prefix — the market-state block changes every scan,
+   the instructions do not.
+2. **Drop optional output fields** (§1.4). `duration_hours` and `roi_pct` for non-shortlisted
+   markets are the cheapest thing to cut, and §5.4 questions whether they earn their tokens.
+3. **Narrower universe via §1.5 feasibility.** Last resort — it trades away the breadth that
+   makes Jev's ranking useful.
+
+Do **not** respond to cost pressure by adding code-side quality filters. That reintroduces
+exactly the inversion §1.2 exists to prevent, and it would do so silently.
 
 ### 8.5 Dependencies
 
@@ -1150,12 +1562,23 @@ HFT, cross-collateral optimization, governance participation.
 
 | Metric | Target |
 |---|---|
-| Net ROI after all costs | > 8% annualized |
+| Net ROI after all costs | **> 0**, and above passive delta-neutral hold — the binding gate |
+| Capital efficiency | Beat passive delta-neutral hold at equal holding time |
+| Realized return on capital | ≥ 5.5%/yr — below the 6.6–7.4% gross ceiling, as costs require |
 | Sharpe | > 1.0 |
 | Max drawdown | < 15% |
 | Win rate | > 65% (carry strategies should win often and small) |
 | Avg win / avg loss | > 3.0 (many small wins, rare contained losses) |
-| Capital efficiency | Beat passive delta-neutral hold |
+
+**There is deliberately no absolute return target.** The Primer derives a ceiling of
+**6.57%/yr at 2× and 7.39%/yr at 3×** on capital from the measured funding rate, and costs
+must come out of that. An 8% target is arithmetically unreachable on this venue and would
+make the agent fail a criterion no strategy could satisfy — which teaches you nothing and
+risks a bot tuned to chase an impossible number.
+
+The meaningful comparison is **against passive hold at equal holding time.** If the agent's
+net ROI does not beat holding the same position without the agent, the agent is a cost
+centre, and the right response is to remove it.
 
 ### Model quality
 

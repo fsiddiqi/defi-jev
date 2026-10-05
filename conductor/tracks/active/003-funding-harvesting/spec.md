@@ -122,32 +122,47 @@ Read from `https://api.hyperliquid.xyz/info`, 2026-10-05. Hyperliquid is **not E
 3. **Jev failures fail closed.** No scan → the ranking ages out → no entry. Never a
    fabricated ranking or a permissive default.
 4. **Code never filters on attractiveness.** Capital and data-integrity constraints only.
-5. **Backtest liquidation against candle high/low, not close.** Zero simulated liquidations
+5. **The UI shows only active strategies, and never synthetic data.** No mock rows, no
+   fabricated judgement, and no mode label that does not match reality. An empty dashboard
+   that says "no active strategy" is correct; a populated one showing invented numbers is
+   worse than useless.
+6. **Backtest liquidation against candle high/low, not close.** Zero simulated liquidations
    is a hard gate.
-6. **Leverage 2–3×**, never the 25× the exchange permits.
-7. **The model cannot propose position size.** Sizing is code; the cap lives below the model
+7. **Leverage 2–3×**, never the 25× the exchange permits. Leverage is *derived* from the
+   notional the caps allow, never chosen directly (§3.6).
+8. **The model cannot propose position size.** Sizing is code; the cap lives below the model
    in the stack.
 
 ## Acceptance criteria
 
+Stage 1 gates the rest. Stages 2 and 3 proceed in parallel once it passes, and all three
+converge on Stage 4:
+
 ```mermaid
-flowchart LR
-  S1["Stage 1<br/>Backtester"] -->|"BLOCKING<br/>beat passive hold"| S4["Stage 4<br/>Execution"]
-  S1 --> S2["Stage 2<br/>Data pipeline"]
-  S2 --> S3["Stage 3<br/>Jev"]
+flowchart TD
+  S1["Stage 1 — Backtester<br/>must beat passive hold"] --> S2["Stage 2 — Data pipeline"]
+  S1 --> S3["Stage 3 — Jev integration"]
+  S2 --> S4["Stage 4 — Execution"]
   S3 --> S4
-  S4 --> S5["Stage 5<br/>Live validation"]
-  S5 --> S6["Stage 6<br/>Calibration"]
+  S4 --> S5["Stage 5 — Live validation"]
+  S5 --> S6["Stage 6 — Calibration"]
 ```
 
 ### Stage 1 — Backtester (must land before any execution code)
 
+- [ ] **Pagination loop (§6.6)** with all five contiguity assertions as tests
+- [ ] **History persistence (§6.5)** — schema, gap-fill on restart, cold-start refusal
+      below `MIN_FEASIBLE_MARKETS`
 - [ ] Paginated `fundingHistory`, ≥12 months, verified point counts per page
 - [ ] OHLCV at 1m for ETH and SOL
 - [ ] Carry simulator accruing funding at exact interval timestamps, not averaged
 - [ ] **Intrabar liquidation check against candle high/low**
 - [ ] Fee + slippage model (taker both legs, 10 bps entry/exit, 25 bps rebalance)
-- [ ] Range-selection policy, evaluated out-of-sample
+- [ ] **Sizing policy (§3.6)** — volatility scalar, notional caps, leverage derived not
+      chosen, both entry gates
+- [ ] **Policy variants compared out-of-sample** against fixed 2× and fixed 3×. If the full
+      policy does not beat fixed-2× after costs, the volatility scalar and viability filter
+      are unjustified and get deleted
 - [ ] **Beats passive delta-neutral hold on net ROI**
 - [ ] **≥200 simulated trades, 0 simulated liquidations**
 
