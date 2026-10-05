@@ -1,0 +1,26 @@
+{
+  "name": "phase-1.5-monitoring",
+  "title": "Phase 1.5: Monitoring & Alerting",
+  "description": "Add observability: real-time dashboard, Telegram alerts, structured logging, health/metrics endpoints",
+  "status": "in_progress",
+  "feature_branch": "phase-1.5-monitoring",
+  "started_date": "2026-10-05",
+  "completed_date": null,
+  "completion_commit": null,
+  "priority": "P1",
+  "owner": "fsiddiqi",
+  "success_metrics": [
+    "Dashboard at localhost:3000 shows live pipeline updates",
+    "Telegram receives startup, execution, skip, and error alerts",
+    "logs/bot.log contains JSON lines for aggregation",
+    "/api/health returns 200 OK",
+    "/metrics exposes Prometheus metrics"
+  ],
+  "dependencies": [
+    "phase-1-core"
+  ],
+  "blocked_by": [],
+  "blocks": [
+    "phase-2-aave"
+  ]
+}

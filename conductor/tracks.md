@@ -10,6 +10,12 @@ Active development tracks for defi-jev.
   - Paper executor
   - Full test coverage
 
+- **[phase-1.5-monitoring](tracks/phase-1.5-monitoring/)** — Observability 🟡 IN PROGRESS
+  - SSE dashboard (port 3000)
+  - Telegram alerts (immediate + digest)
+  - Structured file logging
+  - Health endpoint + Prometheus metrics
+
 ## Planned
 
 - **phase-2-aave** — Real Aave integration
