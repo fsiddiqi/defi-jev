@@ -5,7 +5,7 @@ import type { LiquidationCandidate, Protocol, AssetTier } from "./types.js";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
-const MORPHO_SUBGRAPH = process.env.MORPHO_SUBGRAPH ?? "";
+const MORPHO_SUBGRAPH = process.env.MORPHO_SUBGRAPH ?? "https://gateway.thegraph.com/api/${MORPHO_SUBGRAPH_API_KEY}/subgraphs/id/71ZTy1veF9twER9CLMnPWeLQ7GZcwKsjmygejrgKirqs";
 const MORPHO_BLUE_ADDRESS = (process.env.MORPHO_BLUE_ADDRESS ?? "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb") as `0x${string}`;
 const USDC_ADDRESS = (process.env.USDC_ADDRESS ?? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913") as `0x${string}`;
 const WETH_ADDRESS = (process.env.WETH_ADDRESS ?? "0x4200000000000000000000000000000000000006") as `0x${string}`;
@@ -28,7 +28,7 @@ const IONIC_COMPTROLLER_ABI = parseAbi([
 
 const MORPHO_POSITIONS_QUERY = gql`
   query Positions($first: Int!, $skip: Int!, $ltvMin: Float!) {
-    positions(first: $first, skip: $skip, where: { ltv_gt: $ltvMin, market: { chainId_in: [8453] } }) {
+    positions(first: $first, skip: $skip, where: { ltv_gt: $ltvMin, chainId_in: [8453] }) {
       id
       borrower
       collateral { symbol address priceUsd }
@@ -37,10 +37,13 @@ const MORPHO_POSITIONS_QUERY = gql`
       borrowBalance
       ltv
       liquidationLtv
-      market { lltv }
     }
   }
 `;
+
+
+
+const gqlClient = new GraphQLClient(MORPHO_SUBGRAPH);
 
 function getAssetTier(symbol: string): AssetTier {
   const s = symbol.toLowerCase();
@@ -61,14 +64,12 @@ function estimateGas(protocol: Protocol): number {
 // ── Scanners ─────────────────────────────────────────────────────────────────
 
 export async function scanMorpho(client: PublicClient, ethPriceUsd: number): Promise<LiquidationCandidate[]> {
-  if (!MORPHO_SUBGRAPH) return [];
-
-  const graphql = new GraphQLClient(MORPHO_SUBGRAPH);
+  // Using Morpho official API - no subgraph needed
   const vars = { first: 100, skip: 0, ltvMin: 0.8 };
   let data: any;
 
   try {
-    data = await graphql.request(MORPHO_POSITIONS_QUERY, vars);
+    data = await gqlClient.request(MORPHO_POSITIONS_QUERY, vars);
   } catch {
     return [];
   }

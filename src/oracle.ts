@@ -1,6 +1,6 @@
 import { createPublicClient, http, parseAbi, getAddress } from "viem";
 import { base } from "viem/chains";
-import type { OraclePrice } from "./types";
+import type { OraclePrice } from "./types.js";
 
 const CHAINLINK_ABI = parseAbi([
   "function latestRoundData() view returns (uint80, int256, uint256, uint256, uint80)",
@@ -55,10 +55,10 @@ export async function checkOracleDivergence(
 }
 
 export async function fetchEthPrice(client: ReturnType<typeof createPublicClient>): Promise<number> {
-  const [, answer] = await client.readContract({
+  const result = await client.readContract({
     address: ETH_USD_FEED,
     abi: CHAINLINK_ABI,
     functionName: "latestRoundData",
-  }) as readonly [bigint, bigint];
-  return Number(answer) / 1e8;
+  }) as readonly [bigint, bigint, bigint, bigint, bigint];
+  return Number(result[1]) / 1e8;
 }
