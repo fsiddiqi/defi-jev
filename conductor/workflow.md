@@ -132,6 +132,9 @@ contents.
 ## Example: 003-funding-harvesting
 
 The most complete example is
-[`tracks/active/003-funding-harvesting/spec.md`](tracks/active/003-funding-harvesting/spec.md).
+[`tracks/backlog/003-funding-harvesting/spec.md`](tracks/backlog/003-funding-harvesting/spec.md).
+It is in `backlog` rather than `closed` because its Stage 1 gate was never run — an unstarted
+track and an unfinished one are different states, and this one is fully specced.
+
 For a closed track with verified completion,
 [`tracks/closed/001-core-architecture/`](tracks/closed/001-core-architecture/).

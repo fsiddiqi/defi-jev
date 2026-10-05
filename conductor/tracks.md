@@ -18,17 +18,13 @@ conductor/tracks/
 
 ## Active
 
-| Track | Status | Priority | Summary |
-|---|---|---|---|
-| [003-funding-harvesting](tracks/active/003-funding-harvesting/) | 🟢 active | P1 | Delta-neutral funding carry on Hyperliquid |
-
-Backtester-first. Stage 1 is a blocking gate: it must beat passive delta-neutral hold
-(~9.9%/yr gross) before any execution code is written.
+**None.** No track is currently in progress.
 
 ## Backlog
 
 | Track | Summary | Why waiting |
 |---|---|---|
+| [003-funding-harvesting](tracks/backlog/003-funding-harvesting/) | Delta-neutral funding carry on Hyperliquid | Spec complete, Stage 1 unblocked. Measured ceiling is 6.57-7.39%/yr on committed capital — thin for the complexity. Reactivation gate: standalone backtest first |
 | [002-observability-alerting](tracks/backlog/002-observability-alerting/) | SSE dashboard, Telegram alerts, pino logging | Mostly shipped in `b1ec7e7`. Remaining: `src/metrics.ts`, `/metrics`, tests, log rotation, Telegram digest |
 
 ## Blocked
@@ -45,8 +41,8 @@ None. Criteria for what qualifies are documented in
 ## Superseded
 
 - **phase-2-aave** — Aave liquidation bot. Never started. Superseded by
-  `003-funding-harvesting`. Retained in git history; reactivate only if funding fails its
-  Stage 1 gate.
+  `003-funding-harvesting`, which is itself now in backlog. Retained in git history;
+  reactivate only if funding is abandoned outright.
 
 ## Naming convention
 
@@ -58,8 +54,8 @@ slug describes the work:
 - `003-funding-harvesting`
 
 The older `phase-1` / `phase-1.5` / `phase-2-aave` scheme is retired. It implied a fixed
-delivery order that no longer holds — the active track is not "phase 2" in any meaningful
-sense, it is a different strategy on a different chain against a different venue.
+delivery order that no longer holds — tracks are a different strategy on a different chain
+against a different venue, ordered by priority rather than by number.
 
 Track directories are **not** renamed when a track changes state. Moving `active/` →
 `backlog/` keeps the sequence number and the history coherent; renaming would renumber the

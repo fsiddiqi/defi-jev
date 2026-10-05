@@ -5,9 +5,7 @@ tracks means two half-built systems and no decision point.
 
 ## Contents
 
-| Track | Status | Notes |
-|---|---|---|
-| [003-funding-harvesting](./003-funding-harvesting/) | active | Backtester-first. Replaces `phase-2-aave`. |
+**No active track.** Nothing is currently in progress.
 
 ## Entry criteria
 

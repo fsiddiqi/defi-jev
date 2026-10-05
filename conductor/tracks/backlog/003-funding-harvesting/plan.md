@@ -1,3 +1,12 @@
+> **Status: paused in backlog.** The spec is complete and Stage 1 is unblocked. Work
+> stopped at the Stage 1 gate because spec work established a return ceiling of
+> **6.57-7.39%/yr on committed capital** (measured funding `1.125e-5`/hr, minus the fact
+> that capital is spot *plus* margin). See `metadata.json` → `backlog_reason`.
+>
+> **Reactivation gate:** run the Stage 1 backtest standalone before building Stage 2+.
+> If net ROI after costs does not clearly beat passive delta-neutral hold, the agent is a
+> cost centre and the honest outcome is to leave the strategy here.
+
 # Funding Rate Harvesting — Implementation Plan
 
 Spec: [`spec.md`](./spec.md) · Technical spec:

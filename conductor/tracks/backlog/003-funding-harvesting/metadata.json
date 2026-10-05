@@ -2,15 +2,15 @@
   "name": "003-funding-harvesting",
   "title": "Funding Rate Harvesting (Hyperliquid)",
   "description": "Delta-neutral funding rate harvesting agent on Hyperliquid, replacing the Aave liquidation plan. Jev gates entries; deterministic code governs exits and all safety controls. Backtester-first sequencing.",
-  "status": "active",
+  "status": "backlog",
   "feature_branch": "003-funding-harvesting",
   "started_date": "2026-10-05",
   "completed_date": null,
   "completion_commit": null,
-  "priority": "P1",
+  "priority": "P2",
   "owner": "fsiddiqi",
   "success_metrics": [
-    "Backtest net ROI beats passive delta-neutral hold (9.86%/yr gross) after all costs",
+    "Backtest net ROI > 0 after all costs, and above passive delta-neutral hold at equal holding time",
     "Backtest shows >=200 simulated trades and zero simulated liquidations",
     "7 days live pipeline operation without unhandled errors",
     ">=20 completed live positions with realized ROI within +/-30% of backtest",
@@ -85,5 +85,22 @@
       "OpenRouter client",
       "backtester"
     ]
+  },
+  "backlog_reason": "Paused at the Stage 1 gate. The spec is complete and Stage 1 (backtester) is unblocked, but the strategy's ceiling was derived during spec work and is 6.57-7.39%/yr on committed capital, before costs. That is a low bar for a system of this complexity, and the honest question of whether the agent beats passive hold is better answered by a cheap standalone backtest before the full pipeline is built. Reactivating for the full build means first revisiting whether the agent justifies itself at that return.",
+  "findings_from_spec_work": {
+    "measured_2026-10-05": {
+      "mean_hourly_funding": 1.125e-05,
+      "return_on_capital_2x_pct": 6.57,
+      "return_on_capital_3x_pct": 7.39,
+      "raw_annualized_on_notional_pct": 9.86,
+      "hours_to_recover_30bps": 267,
+      "formula": "f / (1 + 1/L) - funding accrues on perp notional, capital is spot plus margin"
+    },
+    "removed_target": "Spec section 12 previously required >8% annualized net ROI. That is above the 6.57-7.39%/yr ceiling, so the gate could never be met. Replaced with net ROI > 0 versus passive delta-neutral hold at equal holding time.",
+    "unmeasured_inputs": [
+      "OpenRouter per-call cost. Assumed $0.06/M in spec section 8.4; a capable reasoning model is 50-250x that and changes the economics. Must be measured before Stage 2.",
+      "maxAllocationPct, maxNotionalUsd, maxMarginPct are referenced in section 3.1 and have no values anywhere in the spec."
+    ],
+    "inherited_bug": "src/jev/classifier.ts askJev() never calls the TypeSafe API. It validates the key exists then computes local arithmetic with is_safe hardcoded to 0.8. The dashboard labels this REAL. Do not port this function."
   }
 }
