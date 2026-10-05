@@ -3,21 +3,31 @@ import { JevDecision } from '@/jev/classifier';
 import { GateCheckResult } from '@/execution/risk-gates';
 import { LiquidationState } from '@/state/liquidation-state';
 
-export class EventEmitter {
-  private listeners: Map<string, Set<(data: unknown) => void>> = new Map();
+export interface BotEvents {
+  'state:generated': LiquidationState;
+  'jev:decision': { decision: JevDecision; stateHash: string };
+  'gates:checked': { result: GateCheckResult };
+  'liquidation:executed': { state: LiquidationState; decision: JevDecision; profit_usd: number };
+  'session:stats': { count: number; total_gas_usd: number; total_profit_usd: number; average_profit_per_liquidation: number };
+}
 
-  on(event: string, callback: (data: unknown) => void): () => void {
+type EventCallback<T> = (data: T) => void;
+
+export class EventEmitter {
+  private listeners: Map<string, Set<EventCallback<unknown>>> = new Map();
+
+  on<K extends keyof BotEvents>(event: K, callback: EventCallback<BotEvents[K]>): () => void {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
     }
-    this.listeners.get(event)!.add(callback);
+    this.listeners.get(event)!.add(callback as EventCallback<unknown>);
 
     return () => {
-      this.listeners.get(event)?.delete(callback);
+      this.listeners.get(event)?.delete(callback as EventCallback<unknown>);
     };
   }
 
-  emit(event: string, data: unknown): void {
+  emit<K extends keyof BotEvents>(event: K, data: BotEvents[K]): void {
     const callbacks = this.listeners.get(event);
     if (callbacks) {
       callbacks.forEach((cb) => {
