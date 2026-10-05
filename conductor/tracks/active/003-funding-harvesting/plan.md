@@ -39,7 +39,10 @@ paying twice if the strategy has no edge.
 - [ ] `src/agents/funding-agent.ts` — three independent cadences (do not unify)
 - [ ] `setInterval(marginMonitor, 2000)` — **no AI dependency, no OpenRouter dependency**
 - [ ] `setInterval(pollMarketData, 10000)`
-- [ ] `setInterval(evalOpportunity, 300000)`
+- [ ] `setInterval(scanMarkets, 10000)` — enumerate universe, **no quality filter**
+- [ ] `setInterval(entryLoop, 10000)` — reads newest ranking, never awaits Jev
+- [ ] `onTrigger(requestScan)` — async, `scanInFlight` guard so scans cannot overlap
+- [ ] `MAX_SCORE_AGE_S` staleness bound; stale ranking → no entry
 - [ ] Funding poller with staleness limits (§6.4); failed fetch → `null`, **never stale value**
 - [ ] Warm 90-day cache at boot; survive restart without recomputing
 - [ ] Price reconciliation: exchange + Chainlink, 50 bps divergence → `data_integrity` breaker
@@ -53,12 +56,15 @@ paying twice if the strategy has no edge.
 - [ ] `src/jev/client.ts` — OpenRouter, `temperature: 0.1`, `response_format: json_object`
 - [ ] 2s hard timeout via `AbortSignal`
 - [ ] `src/jev/funding-schema.ts` — Zod validation of the response contract
-- [ ] **Test:** malformed output, missing `action`, `confidence` out of range, oversized
-      `recommended_position_usd` → all rejected or clamped, **never passed through**
-- [ ] **Test:** `askJev` throws → no entry. Assert no permissive fallback exists on any path
-- [ ] Code pre-gates **before** the Jev call (venue health, zscore, percentile)
-- [ ] Persist confidence, duration, ROI forecast, `invalidators`
-- [ ] Record `jev_error` with latency, retry count, fallback
+- [ ] **Test:** viability score required for **every** enumerated market; a missing or
+      non-numeric score rejects the scan
+- [ ] **Test:** hallucinated symbol in `shortlist` → rejected, never reaches sizing
+- [ ] **Test:** out-of-range viability clamps to `[0,1]`; **model cannot propose size**
+- [ ] **Test:** `askJev` throws → previous ranking ages out → no entry. Assert no fabricated
+      ranking and no permissive fallback exists on any path
+- [ ] **Test:** a 30s scan cannot delay the margin monitor (no shared await)
+- [ ] Persist viability, duration, ROI forecast, `invalidators`, and cost per scan
+- [ ] Record `jev_error` with latency, token counts, retry count, fallback
 
 ## Stage 4 — Execution
 

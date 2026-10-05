@@ -120,45 +120,73 @@ pattern question, not a threshold question.
 
 ### 1.2 Decision logic
 
-Jev returns a routing decision. It does **not** emit a threshold rule; thresholds are
-enforced in code (§7) and Jev operates within them.
+**Code enumerates opportunities. Jev judges them. Code never judges quality.**
 
-| Condition | Action |
-|---|---|
-| `zscore > 2.0` **and** `hours_persistent > 12` | Candidate — full size if confidence holds |
-| `zscore > 2.0` **and** `hours_persistent < 4` | Reject — likely transient spike |
-| `percentile < 0.90` | Reject — not enough edge |
-| `predicted_flip_probability > 0.35` | Reject — carry may not survive entry costs |
-| `venue_health != ok` | Reject — hard veto, code-enforced regardless of Jev |
-| `vol_percentile > 0.95` | Reject — liquidation risk too high for the margin buffer |
+An earlier draft of this spec contradicted itself on this point. It stated that "Jev does
+not emit a threshold rule; thresholds are enforced in code," then routed on `zscore > 2.0`,
+`percentile < 0.90`, and `predicted_flip_probability > 0.35` before Jev was ever called.
+That is code deciding what makes a trade good, with Jev ratifying the result.
 
-### 1.3 Confidence scoring
+That arrangement destroys the thesis. If code selects the opportunities, the score is never
+tested against anything difficult, and "if calibration is flat, remove Jev" becomes a
+guaranteed outcome rather than a finding.
 
-Jev reports confidence in `[0, 1]`. This is a *self-assessment* and should be treated as
-uncalibrated until §5.3 proves otherwise. Store it anyway — the calibration curve is
-produced by tracking it, which is the entire point of logging it.
+Code applies only constraints that are not judgments about quality:
 
-Interpretation during calibration:
+| Constraint | Enforced in code | Why this is not a quality judgment |
+|---|---|---|
+| Available margin, position cap, leverage ≤ 3× | yes | You cannot spend capital you do not have |
+| Live spread and slippage reality | yes | Costs are measured, not opinionated |
+| Price and funding staleness | yes | Stale data makes any judgment meaningless |
+| Venue health, spot/perp reconciliation | yes | Trading a broken feed is not a strategy question |
+| Funding rate is positive | yes | A negative rate is a payment, not an opportunity |
 
-- `> 0.75` — take, full size
-- `0.60–0.75` — take at half size
-- `< 0.60` — skip
+If code filtered on attractiveness — percentile, z-score, hours of persistence, volatility
+percentile — it would be selecting on trade quality, which is Jev's job. It does not.
+
+### 1.3 Viability scoring
+
+Jev returns a continuous viability score in `[0, 1]` for every enumerated market, plus a
+shortlist. A score is strictly better than an `ENTER`/`SKIP` verdict here:
+
+- **Buckets properly for ECE and Brier.** A binary verdict discards the ordering that makes
+  calibration measurable.
+- **Ranking across markets requires scores.** N binary verdicts cannot be ranked.
+- **Every scan produces a labelled point**, not only the trades actually taken. Calibration
+  needs negative examples, and a shortlist-only design only ever records positives.
+
+The score is a *self-assessment* and is uncalibrated until §5.3 proves otherwise. Store it
+regardless — the calibration curve is produced by tracking it, which is the entire reason to
+log it.
+
+No code rule converts a score into a trade decision. Ranking selects the top-k by score, and
+the floor for acting on any of them is `MIN_VIABILITY_SCORE`, a configured risk parameter in
+the same family as max position count — not a hardcoded opinion about what makes a trade
+worth taking.
 
 ### 1.4 Output contract
 
 ```jsonc
 {
-  "action": "ENTER" | "HOLD" | "SKIP",
-  "confidence": 0.81,
-  "predicted_duration_hours": 42,
-  "predicted_roi_pct": 0.94,
-  "recommended_position_usd": 32000,
-  "reasoning": "Funding at 97th percentile, 31h persistent, perp premium annualized 7.4% "
-             + "supports carry without imminent mean reversion. Vol mid-range; margin buffer "
-             + "intact at 34%.",
-  "invalidators": ["funding below 0.003% for 2 consecutive hours", "vol > 95th percentile"]
+  "scan_id": "01JQ8X2M4N",
+  "universe_size": 234,
+  "scores": {
+    "ETH": { "viability": 0.81, "duration_hours": 42, "roi_pct": 0.94 },
+    "SOL": { "viability": 0.44, "duration_hours": 11, "roi_pct": 0.21 },
+    "ARB": { "viability": 0.07 }
+  },
+  "shortlist": ["ETH"],
+  "reasoning": "ETH funding at 97th percentile, 31h persistent, perp premium annualized "
+             + "7.4% supports carry without imminent mean reversion. SOL carry is real but "
+             + "thinner and mean-reverts faster. ARB funding is near zero after costs.",
+  "invalidators": ["ETH funding below 0.003% for 2 consecutive hours",
+                   "ETH vol above 95th percentile"]
 }
 ```
+
+`viability` is required for every enumerated market, not just the shortlist. The
+shortlist is a convenience for sizing and display; the full `scores` map is what makes
+calibration possible, because it records the rejected cases too.
 
 `invalidators` is the field to insist on. It forces the model to name conditions that would
 void its own thesis, and code checks them (§2.4). A model that cannot say what would falsify
@@ -179,12 +207,36 @@ faster than the accrual interval adds cost and noise without adding information.
 | Mark price / liquidation distance | **5s** | This is the safety-critical path |
 | Spot price | 15s | Balance against lag; mark price is perp-native |
 | Account state read | 10s | Drift and margin |
-| Jev inference | 5 min, and on funding change | Expensive; no value more often |
+| Full-universe Jev scan | **Async, on trigger — not a timer** | See below |
 | Health factor / margin check | 2s | Deterministic hard stop |
 
-The asymmetry is deliberate: **Jev runs at 5-minute cadence, margin monitoring at 2 seconds.**
-If you make those the same number, you have either made Jev uselessly slow or margin
+Jev is not polled, and it is not in the entry path. A scan over 234 markets must emit 234
+numbers — roughly 700 output tokens. At a realistic 200 tok/s decode that is ~3.5s before
+prefill is counted. No model size makes that subsecond at a quality worth trusting for the
+judgment that matters.
+
+So the scan runs off the critical path, and the entry loop consumes its **freshest result**
+under a staleness bound.
+
+| Loop | Cadence | Contains |
+|---|---|---|
+| Margin monitor | 2s | Deterministic only. No AI. |
+| Market scan | 10s | Enumeration only. No quality filter. |
+| Jev ranking | On trigger, async | Scores the entire universe |
+| Entry | 10s, on market scan | Reads newest ranking; acts only if `age < MAX_SCORE_AGE_S` |
+
+The asymmetry still holds and is still the point: **margin monitoring at 2 seconds, Jev
+whenever it can afford to be.** Making them equal either makes Jev uselessly slow or margin
 monitoring uselessly blind.
+
+`MAX_SCORE_AGE_S` is not a quality judgment. It is the same data-integrity rule as "do not
+trade on a stale price," applied to the model's view. A stale ranking is not a bearish
+ranking; it is no ranking at all.
+
+Trigger conditions for a scan: new market enters the feasible universe, an open position's
+score falls below `MIN_VIABILITY_SCORE`, funding crosses zero on a shortlisted market, or
+`MAX_SCORE_AGE_S` has elapsed. In other words, when the previous answer might no longer
+hold.
 
 ### 2.2 Data sources
 
@@ -419,11 +471,25 @@ short holds are unprofitable and that is a real result, not a modeling artifact.
 
 Every line is one event. Append-only, one JSON object per line, in `logs/`.
 
-**Decision (Jev consulted)**
+**Scan (Jev ranked the full universe)**
 
 ```json
-{"ts":"2026-10-05T14:32:11.204Z","event":"decision","run_id":"01JQ8X2M4N","symbol":"ETH","inputs":{"funding_hourly_pct":0.0087,"zscore":2.34,"percentile_1y":0.97,"hours_persistent":31,"vol_24h":0.62,"vol_percentile":0.44,"basis_annualized":7.39,"regime":"bullish_trending"},"jev":{"action":"ENTER","confidence":0.81,"predicted_duration_hours":42,"predicted_roi_pct":0.94,"latency_ms":612},"code_gates":{"pre_pass":true,"venue_ok":true},"decision":"ENTER","position_usd":32000}
+{"ts":"2026-10-05T14:32:08.412Z","event":"scan","scan_id":"01JQ8X2M4N","universe_size":234,"enumerated":231,"shortlist":["ETH","SOL"],"jev":{"latency_ms":3480,"input_tokens":11480,"output_tokens":712,"model":"jev-scan-v1","scores":{"ETH":{"viability":0.81,"duration_hours":42,"roi_pct":0.94},"SOL":{"viability":0.44,"duration_hours":11,"roi_pct":0.21},"ARB":{"viability":0.07}}},"invalidators":["ETH funding below 0.003% for 2 consecutive hours"]}
 ```
+
+This is the calibration record. It carries every score including the rejected ones, so
+rejected markets become labelled negatives. `universe_size` versus `enumerated` shows how
+many the code-side capital and integrity constraints removed — and per §1.2 that number must
+reflect feasibility only, never attractiveness.
+
+**Decision (entry acted on a ranking)**
+
+```json
+{"ts":"2026-10-05T14:32:11.204Z","event":"decision","run_id":"01JQ8X2M4N","symbol":"ETH","scan_id":"01JQ8X2M4N","score_age_s":2.8,"inputs":{"funding_hourly_pct":0.0087,"zscore":2.34,"percentile_1y":0.97,"hours_persistent":31,"vol_24h":0.62,"vol_percentile":0.44,"basis_annualized":7.39,"regime":"bullish_trending"},"viability":0.81,"rank":1,"code_gates":{"margin_ok":true,"venue_ok":true,"data_fresh":true},"decision":"ENTER","position_usd":32000}
+```
+
+`score_age_s` is recorded on every decision so that a regression in Jev availability shows
+up as stale entries rather than as mysteriously flat PnL.
 
 **Entry**
 
@@ -476,12 +542,12 @@ MAE approaches your liquidation distance, you were closer than you thought.
 
 ### 5.3 Calibration metrics
 
-The reason to log `confidence` is to produce this table.
+The reason to log `viability` is to produce this table.
 
-**Confidence calibration**
+**Viability calibration**
 
 ```
-bucket_confidence:  predict(P(profit | conf in bucket))
+bucket_viability:  predict(P(profit | viability in bucket))
   0.55–0.60 →  n=12,  actual 0.50,  gap -0.05
   0.60–0.65 →  n=23,  actual 0.61,  gap +0.01
   0.65–0.70 →  n=31,  actual 0.58,  gap -0.07
@@ -496,14 +562,29 @@ bucket_confidence:  predict(P(profit | conf in bucket))
 ECE = Σ (n_b / N) × |predicted_b − actual_b|
 ```
 
-Also track **Brier score** (`mean((outcome − conf)²)`, lower better) and **forecast error**
-(`actual_roi − predicted_roi`) split by predicted duration bucket.
+Also track **Brier score** (`mean((outcome − viability)²)`, lower better) and **forecast
+error** (`actual_roi − predicted_roi`) split by predicted duration bucket.
 
-**Be honest about sample size.** With a 60%-minimum gate, you will only ever observe the
-high-confidence regime — roughly 60–70% of trades. You cannot calibrate the low end, and
-that is fine: you never trade it. But it means N grows slowly, and no conclusion is
-statistically meaningful below ~100 positions. Say so in the report rather than reading
-noise.
+**Every scan is a labelled data point, including the markets not taken.** Because §1.2 moved
+quality judgment entirely into Jev and §5.1 logs the full `scores` map, rejected markets
+become observed negatives. This is a direct benefit of the inverted funnel and it is not a
+small one: the low end of the scale is where calibration is hardest, and a shortlist-only
+design never produces a single observation below the entry floor.
+
+Two consequences for the sample-size argument:
+
+- **Calibration N grows at the scan rate, not the trade rate.** One scan over 234 markets
+  contributes 234 points, most of them negatives.
+- **But negatives are only labelled if the counterfactual is knowable.** A market that was
+  never traded has no realized outcome, so it cannot be scored without either simulating it
+  (§9) or holding it. Until §9's backtest can replay a scan, calibrate on **taken** trades
+  only, and treat the full-universe scores as a ranking to be validated out-of-sample rather
+  than as a labelled set.
+
+That distinction is the honest position: the scan log tells you what Jev believed and when.
+It does not tell you whether it was right until something either trades it or replays it.
+No conclusion is statistically meaningful below ~100 *resolved* observations regardless of how
+many scores are logged — say so in the report rather than reading noise.
 
 ---
 
@@ -637,7 +718,7 @@ function stressTest(notional, leverage, config) -> bool {
 ```
 
 If any shock in that ladder breaks the buffer, the position is too leveraged — regardless of
-what Jev's confidence says.
+what Jev's viability score says.
 
 ---
 
@@ -654,19 +735,32 @@ interface JevRequest {
   response_format: { type: 'json_object' };
 }
 
+interface MarketScore {
+  viability: number;              // [0, 1] — the decision signal
+  duration_hours?: number;        // optional; expected hold time
+  roi_pct?: number;               // optional; expected return over that hold
+}
+
 interface JevResponse {
-  action: 'ENTER' | 'HOLD' | 'SKIP';
-  confidence: number;
-  predicted_duration_hours: number;
-  predicted_roi_pct: number;
-  recommended_position_usd: number;
+  scan_id: string;
+  universe_size: number;
+  scores: Record<string, MarketScore>;   // MUST cover the full enumerated universe
+  shortlist: string[];
   reasoning: string;
-  invalidators: string[];
+  invalidators: string[];                // ["SYMBOL condition", ...]
 }
 ```
 
+`viability` carries the decision. `duration_hours` and `roi_pct` are optional because they
+are only meaningful for markets that could plausibly be taken, and a full-universe scan will
+not have a considered view on all 234.
+
+**The model cannot propose position size.** Sizing is code (§3.1), derived from capital
+available, volatility, and the hard cap. A model-supplied `recommended_position_usd` would
+put the model above the cap — which is precisely the inversion §1.2 exists to prevent.
+
 ```typescript
-async function askJev(inputs: SignalBundle): Promise<JevResponse> {
+async function askJev(universe: SignalBundle[]): Promise<JevResponse> {
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -684,38 +778,62 @@ async function askJev(inputs: SignalBundle): Promise<JevResponse> {
           role: 'system',
           content: FUNDING_SYSTEM_PROMPT,   // §1 rules encoded as prose
         },
-        { role: 'user', content: JSON.stringify(inputs) },
+        { role: 'user', content: JSON.stringify(universe) },
       ],
     }),
-    signal: AbortSignal.timeout(2000),      // hard 2s ceiling
+    signal: AbortSignal.timeout(CONFIG.jevTimeoutMs),   // ceiling, not a cadence
   });
 
   if (!res.ok) throw new Error(`jev_http_${res.status}`);
   const json = await res.json();
-  return validateAndClamp(JSON.parse(json.choices[0].message.content));
+  return validateScan(JSON.parse(json.choices[0].message.content), universe);
 }
 ```
+
+A full-universe scan legitimately takes seconds, so the timeout here is a ceiling against a
+hung request — not a statement that scans are fast. Because scans are off the critical path,
+a slow scan delays the *ranking*, never the margin monitor and never the 10s market scan.
 
 `validateAndClamp` is not optional — malformed model output must never reach execution:
 
 ```typescript
-function validateAndClamp(raw: unknown): JevResponse {
+function validateScan(raw: unknown, universe: SignalBundle[]): JevResponse {
   const d = raw as JevResponse;
-  if (!['ENTER', 'HOLD', 'SKIP'].includes(d?.action)) throw new Error('jev_bad_action');
-  if (typeof d.confidence !== 'number' || d.confidence < 0 || d.confidence > 1) {
-    throw new Error('jev_bad_confidence');
+  if (!d || typeof d !== 'object') throw new Error('jev_not_object');
+  if (!d.scores || typeof d.scores !== 'object') throw new Error('jev_no_scores');
+  if (!Array.isArray(d.shortlist)) throw new Error('jev_no_shortlist');
+
+  for (const [symbol, s] of Object.entries(d.scores)) {
+    if (typeof s?.viability !== 'number' || Number.isNaN(s.viability)) {
+      throw new Error(`jev_bad_viability:${symbol}`);
+    }
+    if (s.viability < 0 || s.viability > 1) s.viability = clamp01(s.viability);
   }
-  d.confidence = Math.min(d.confidence, 1);
-  d.recommended_position_usd = Math.min(
-    d.recommended_position_usd ?? 0,
-    CONFIG.maxPositionUsd,     // model cannot exceed the hard cap
-  );
+
+  // Every shortlisted symbol must exist in the universe we sent, and must have a score.
+  for (const symbol of d.shortlist) {
+    const known = universe.some((m) => m.symbol === symbol);
+    if (!known) throw new Error(`jev_shortlist_unknown_symbol:${symbol}`);
+    if (d.scores[symbol] === undefined) throw new Error(`jev_shortlist_unscored:${symbol}`);
+  }
+
   return d;
 }
 ```
 
-The cap clamp matters: a model proposing $5M is a model error, and the cap must live below
-the model in the stack.
+Three properties matter here, and all of them fail closed:
+
+1. **Clamp, do not reject, out-of-range viability.** A score of `1.08` is a formatting
+   artefact, not a dangerous signal. Rejecting the whole scan over it throws away 234 good
+   scores.
+2. **The shortlist is validated against what we actually sent.** A hallucinated symbol would
+   otherwise reach the sizing and execution code, which have no way to know it was invented.
+3. **A shortlisted symbol with no score is an error**, because ranking must be total over
+   the shortlist.
+
+There is no default ranking. If the scan throws, the previous ranking keeps its age and
+eventually goes stale, and §2.1's staleness bound stops entries. Uncertainty closes the
+position.
 
 ### 8.2 State storage
 
@@ -733,55 +851,129 @@ reasonable only as a write-through cache in front of it.
 
 ### 8.3 Loop structure
 
+```mermaid
+flowchart TD
+  subgraph crit["Critical path — never awaits Jev"]
+    M["Margin monitor<br/>every 2s"] --> B["Circuit breakers<br/>halt or unwind"]
+    S["Market scan 10s<br/>enumerate only, no quality filter"] --> U["Feasible universe"]
+  end
+  U -->|"async, on trigger,<br/>never overlapped"| J["Jev ranks full universe<br/>~700 output tokens"]
+  J --> R["Newest ranking<br/>+ timestamp"]
+  R --> D{"age under<br/>MAX_SCORE_AGE_S?"}
+  D -->|"fresh"| E["Entry loop 10s<br/>execute top-k"]:::win
+  D -->|"stale"| N["Wait — never trade<br/>on a stale view"]:::hold
+  J -.->|"scan failed"| N
+
+  classDef win fill:#1b5e20,stroke:#4caf50,color:#fff
+  classDef hold fill:#4e342e,stroke:#8d6e63,color:#fff
+```
+
+Four independent loops. **The Jev scan is off the critical path and is never awaited by the
+entry loop.** Everything else is deterministic.
+
 ```typescript
-// Three independent cadences. Do NOT unify them.
-setInterval(marginMonitor,  2000);   // safety-critical, no AI
-setInterval(pollMarketData, 10000);  // data refresh
-setInterval(evalOpportunity,300000); // Jev, expensive
+// Independent timers. Do NOT unify, and do NOT await Jev from the entry path.
+setInterval(marginMonitor,   2000);   // safety-critical, no AI, no network to an LLM
+setInterval(scanMarkets,    10000);   // enumerate universe; apply feasibility constraints only
+setInterval(entryLoop,      10000);   // read newest ranking under a staleness bound
+onTrigger(requestScan);               // async, never blocks the above
 ```
 
 ```typescript
 class FundingAgent extends EventEmitter {
+  private ranking: { scan: JevResponse; at: number } | null = null;
+
   async start() {
     await this.warmFundingHistory();       // 90d lookback must exist before first decision
     await this.assertVenueHealth();
     this.emit('ready');
     setInterval(() => this.marginMonitor(), 2000);
-    setInterval(() => this.pollMarketData(), 10000);
-    setInterval(() => this.evalOpportunity(), 300000);
+    setInterval(() => this.scanMarkets(),  10000);
+    setInterval(() => this.entryLoop(),    10000);
   }
 
-  private async evalOpportunity() {
-    const signals = await this.buildSignals();
-    if (!signals) return this.emit('no-entry', 'data_unavailable');
+  // Enumeration only. Capital and integrity constraints, never attractiveness (§1.2).
+  private async scanMarkets() {
+    this.universe = await this.fetchAllMarkets();          // 234 perp markets
+    this.universe = this.universe.filter((m) => this.feasible(m));
+    if (this.needsScan()) this.requestScan();               // fire and forget
+  }
 
-    // Code pre-gate BEFORE spending a Jev call
-    if (!this.preGatesPass(signals)) return this.emit('no-entry', 'pre_gate');
-
-    let decision;
+  private async requestScan() {
+    if (this.scanInFlight) return;                         // never overlap scans
+    this.scanInFlight = true;
     try {
-      decision = await askJev(signals);          // fail-closed on throw
+      const scan = await askJev(this.universe);            // seconds is fine here
+      this.ranking = { scan, at: Date.now() };
+      this.metrics.increment('scan.ok');
     } catch (err) {
-      this.metrics.increment('jev.failed');
-      return this.emit('no-entry', 'jev_unavailable');   // never permissive fallback
+      // Fail closed: leave the previous ranking in place. It ages, and the staleness
+      // bound in entryLoop stops entries on its own. Never fabricate a ranking.
+      this.metrics.increment('scan.failed');
+      this.emit('scan-failed', err);
+    } finally {
+      this.scanInFlight = false;
     }
+  }
 
-    if (decision.action !== 'ENTER') return this.emit('skipped', decision);
-    if (this.breaker.blocked()) return this.emit('no-entry', 'breaker');
+  private async entryLoop() {
+    if (!this.ranking) return this.emit('no-entry', 'no_scan_yet');
 
-    const sized = this.sizePosition(decision, signals);
-    if (!sized.ok) return this.emit('rejected', sized.reason);
-    if (!this.stressTest(sized)) return this.emit('rejected', 'stress_failed');
+    const ageS = (Date.now() - this.ranking.at) / 1000;
+    if (ageS > CONFIG.maxScoreAgeS) return this.emit('no-entry', 'stale_scan');
 
-    await this.executeEntry(sized);               // §4.1 sequence
+    for (const symbol of this.ranking.scan.shortlist) {
+      const score = this.ranking.scan.scores[symbol];
+      if (score.viability < CONFIG.minViabilityScore) continue;
+      if (this.breaker.blocked()) return this.emit('no-entry', 'breaker');
+
+      const sized = this.sizePosition(score, symbol);       // §3.1 — size in code, not model
+      if (!sized.ok) continue;
+      if (!this.stressTest(sized)) { this.emit('rejected', symbol, 'stress_failed'); continue; }
+
+      await this.executeEntry(sized);                       // §4.1 sequence
+      break;                                               // one position at a time
+    }
   }
 }
 ```
 
-Reuse your existing `EventEmitter` from `src/server/events.ts` and the dashboard — the
+Three properties this shape guarantees, and each is a test:
+
+1. **A Jev scan slower than 10s cannot delay the margin monitor.** They share no await.
+2. **Overlapping scans are impossible** (`scanInFlight`), so a slow model cannot pile up
+   requests and exhaust the rate limit.
+3. **Scan failure closes the position.** The old ranking ages past `maxScoreAgeS` and
+   entries stop. There is no code path that invents a ranking.
+
+Reuse the existing `EventEmitter` in `src/server/events.ts` and the dashboard — the
 event-driven pipeline already matches this shape.
 
-### 8.4 Dependencies
+### 8.4 Inference cost budget
+
+Every full-universe scan costs real money, and a design that scans on a timer rather than on
+trigger will quietly spend more than the strategy earns. At ~11.5k input and ~700 output
+tokens per scan:
+
+| Trigger rate | Scans/day | Est. cost/day @ $0.06/M | Share of $50k gross (~$9–10/day) |
+|---|---|---|---|
+| On-change only, ~50–200/day | 200 | ~$0.14 | 1.5% |
+| Every 60s | 1,440 | ~$1.04 | 11% |
+| Every 10s | 8,640 | ~$6.22 | 65% |
+| Every 1s | 86,400 | ~$62 | **6.5×** |
+
+The cadence choice is an economic decision, not a performance one. Trigger-based scanning is
+what makes the full-universe design affordable; a timer-based scan at 10s would consume most
+of the gross return.
+
+**Required instrumentation:** `scan.tokens_in`, `scan.tokens_out`, and `scan.cost_usd` on
+every scan event (§5.1), plus a daily cumulative counter with an alert at 5% of gross. Per-call
+cost is an assumption until measured against the real prompt — it varies roughly 10× across
+OpenRouter models, so model choice is itself a cost decision. If scans become frequent
+enough that cost matters, the lever is prompt caching on a stable system prefix, not a
+narrower universe.
+
+### 8.5 Dependencies
 
 ```jsonc
 {
@@ -910,17 +1102,17 @@ zero breaker trips; no leg-failure incidents unresolved.
 ### Weeks 5–8 — Calibration and tuning
 
 - Expand to 2–3 positions, `$15,000` cap
-- Recompute calibration with live data; adjust confidence gates
+- Recompute calibration with live data; adjust the viability floor
 - Test `invalidators` — do they fire when they should?
 - Add SOL as second asset if ETH works
 
-**Exit criteria:** ECE < 0.10; Brier < 0.21; live Sharpe > 0.8; confidence buckets
+**Exit criteria:** ECE < 0.10; Brier < 0.21; live Sharpe > 0.8; viability buckets
 monotonic.
 
 ### Week 9+ — Scaling decision
 
 Scale only if calibration holds. The go/no-go is **not** "did we make money" — it is
-"does the confidence score predict outcomes." If confidence is uninformative, the model
+"does the viability score predict outcomes." If the score is uninformative, the model
 adds nothing over a threshold rule, and scale is unjustified regardless of PnL.
 
 ---
@@ -971,7 +1163,7 @@ HFT, cross-collateral optimization, governance participation.
 |---|---|---|
 | ECE | < 0.10 | Confidence tracks reality |
 | Brier score | < 0.21 | Better than a constant 0.7 forecast |
-| Bucket monotonicity | Strict | Higher confidence → higher actual win rate |
+| Bucket monotonicity | Strict | Higher viability → higher actual win rate |
 | Duration error | MAPE < 40% | `predicted_duration_hours` is useful |
 | ROI forecast error | Within ±50% | `predicted_roi_pct` is directional, not precise |
 
@@ -987,13 +1179,13 @@ HFT, cross-collateral optimization, governance participation.
 
 ### The honest success criterion
 
-The strategy succeeds if **confidence is informative and net ROI is positive after all
+The strategy succeeds if **viability is informative and net ROI is positive after all
 costs.**
 
 It is not: making money in isolation (could be luck or a favorable regime), or the bot
 running without errors (a bot that faithfully loses money has still failed).
 
-If after 200 live trades the calibration curve is flat — meaning confidence does not predict
+If after 200 live trades the calibration curve is flat — meaning the score does not predict
 outcomes — then Jev is decoration, the correct action is to strip it out, and a simple
 threshold rule on `zscore` will do the same job for a fraction of the latency and cost. That
 is a valid and useful outcome of this project.

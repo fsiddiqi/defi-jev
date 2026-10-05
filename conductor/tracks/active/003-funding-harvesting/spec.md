@@ -60,25 +60,48 @@ capital is spot notional plus margin, so at 2–3× leverage the realised rate i
 `f / (1 + 1/L)` ≈ **6.6–7.4%/yr** against the 9.86% raw rate. Benchmarks must be compared
 like for like.
 
-## Agent loop
+## Decision architecture
 
-Jev gates entries only. Everything that protects capital is deterministic code, because an
-LLM round trip is 200–1500 ms and a margin cascade takes seconds.
+**Code enumerates opportunities. Jev judges them. Code never judges quality.**
+
+Code applies only capital and data-integrity constraints — margin available, position cap,
+leverage ≤3×, live spread, staleness, venue health. Those are not judgments about whether a
+trade is good. It applies no percentile, z-score, persistence, or volatility threshold. Any
+such filter would be selecting on attractiveness, which is Jev's job.
+
+That distinction is load-bearing. If code picks which markets matter, the score is never
+tested on anything difficult, and "flat calibration means remove Jev" becomes a guaranteed
+outcome rather than a test.
+
+Jev returns a continuous **viability score** for every enumerated market, not `ENTER/SKIP`.
+That ranks the universe, buckets properly for ECE/Brier, and produces a calibration point
+for every scan — including the markets not taken.
 
 ```mermaid
 flowchart TD
-  subgraph det["Deterministic — 2s and 10s"]
+  subgraph det["Deterministic, never blocked by AI"]
     M["Margin monitor<br/>every 2s"] --> B["Circuit breakers<br/>halt or unwind"]
-    A["Account state<br/>every 10s"] --> B
-  end
-  subgraph jev["Jev — every 5 min, entries only"]
-    G["Code pre-gates<br/>zscore, percentile"] --> J["Jev<br/>confidence, duration"]
-    J --> C["Enter, clamped to caps"]
-    J -.->|"failure means no entry"| N["Do nothing"]:::neutral
+    S["Market scan 10s<br/>enumerate only, no quality filter"] --> U["Feasible universe"]
+    U -->|"async, on trigger"| J["Jev ranks full universe<br/>234 viability scores"]
+    J --> R["Newest ranking<br/>+ timestamp"]
+    E["Entry loop 10s"] --> D{"score age<br/>under bound?"}
+    R --> D
+    D -->|"fresh"| X["Execute top-k"]:::win
+    D -->|"stale"| N["Wait — never trade<br/>on a stale view"]:::hold
   end
 
-  classDef neutral fill:#37474f,stroke:#78909c,color:#fff
+  classDef win fill:#1b5e20,stroke:#4caf50,color:#fff
+  classDef hold fill:#4e342e,stroke:#8d6e63,color:#fff
 ```
+
+Jev's scan is **off the critical path**. Scoring 234 markets means emitting ~700 numbers —
+about 3.5s at a realistic decode rate, so subsecond across the full universe is not
+available at any model size worth trusting. The entry loop instead reads the freshest
+ranking and acts only while it is under `MAX_SCORE_AGE_S`.
+
+That staleness bound is not a quality judgment. It is "do not trade on a stale price" applied
+to the model's view: a stale ranking is not a bearish ranking, it is no ranking at all. When a
+scan fails, the previous ranking ages out and entries stop — uncertainty closes the position.
 
 ## Venue constraints
 
@@ -94,12 +117,16 @@ Read from `https://api.hyperliquid.xyz/info`, 2026-10-05. Hyperliquid is **not E
 ## Hard constraints
 
 1. **Jev gates entries only.** Exits, rebalancing, and all circuit breakers are code.
-2. **Cadences stay asymmetric:** Jev 5 min, account state 10 s, margin monitor 2 s.
-3. **Jev failures fail closed.** No decision → no entry. Never a permissive default.
-4. **Backtest liquidation against candle high/low, not close.** Zero simulated liquidations
+2. **Cadences stay asymmetric:** margin monitor 2 s, market scan 10 s, Jev async on
+   trigger. The Jev scan is never awaited by the entry loop.
+3. **Jev failures fail closed.** No scan → the ranking ages out → no entry. Never a
+   fabricated ranking or a permissive default.
+4. **Code never filters on attractiveness.** Capital and data-integrity constraints only.
+5. **Backtest liquidation against candle high/low, not close.** Zero simulated liquidations
    is a hard gate.
-5. **Leverage 2–3×**, never the 25× the exchange permits.
-6. **Model output is clamped by hard caps in code**, below the model in the stack.
+6. **Leverage 2–3×**, never the 25× the exchange permits.
+7. **The model cannot propose position size.** Sizing is code; the cap lives below the model
+   in the stack.
 
 ## Acceptance criteria
 
@@ -135,12 +162,14 @@ flowchart LR
 
 ### Stage 3 — Jev integration
 
-- [ ] OpenRouter client, 2 s hard timeout, `response_format: json_object`, temperature 0.1
-- [ ] Schema validation + position cap clamp at the boundary
-- [ ] **Fail-closed on every error path**
-- [ ] Confidence, `predicted_duration_hours`, `predicted_roi_pct`, `invalidators` persisted
-- [ ] Code pre-gates run **before** spending a Jev call
-- [ ] `jev_error` logged with fallback recorded
+- [ ] OpenRouter client, `response_format: json_object`, temperature 0.1
+- [ ] Viability score required for **every** enumerated market, shortlist validated against
+      what was actually sent — a hallucinated symbol must never reach sizing
+- [ ] **Fail-closed on every error path** — no default ranking is ever fabricated
+- [ ] `duration_hours`, `roi_pct`, `invalidators` persisted; score for all markets logged
+- [ ] Overlapping scans impossible (`scanInFlight` guard) so a slow model cannot exhaust the
+      rate limit
+- [ ] Inference cost instrumentation: tokens in/out, cost per scan, daily cumulative
 
 ### Stage 4 — Execution
 
