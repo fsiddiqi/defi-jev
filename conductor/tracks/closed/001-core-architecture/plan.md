@@ -152,9 +152,13 @@ All tasks completed and tested. Dry-run verified.
 ✅ Dry-run completes successfully
 ✅ GitHub repo created and pushed
 
-## Next Steps (Phase 2)
+## Next Steps (superseded)
 
-See `conductor/tracks/phase-2-aave/spec.md` when ready to implement:
+> This section is historical. The liquidation plan below was never implemented and has been
+> superseded — see [`docs/STRATEGIES.md`](../../../../docs/STRATEGIES.md) for why it was dropped.
+> The successor is [`003-funding-harvesting`](../../active/003-funding-harvesting/).
+
+The original plan of record, retained for reference:
 - [ ] Account monitoring (Aave subgraph or RPC polling)
 - [ ] Liquidation contract calls (aaveLendingPool.liquidationCall)
 - [ ] Swap integration (1inch/Uniswap for bonus → stablecoin)

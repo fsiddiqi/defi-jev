@@ -9,9 +9,43 @@ Each track represents a user-facing feature or major milestone. Tracks have:
 - **plan.md** — Implementation tasks (Red → Green → Refactor TDD cycle)
 - **metadata.json** — Track metadata
 
-## Lifecycle
+## Track Lifecycle
 
-### Planning Phase
+A track's location in the directory tree **is** its status. There is no separate status field
+to keep in sync.
+
+| Folder | Meaning | Exit criteria |
+|---|---|---|
+| `active/` | In progress. **Max one at a time.** | All plan tasks done and every spec criterion met -> `closed/` |
+| `backlog/` | Understood and specced, not current priority | Becomes highest-value work -> `active/` |
+| `blocked/` | Cannot proceed; needs something outside its scope | Blocker resolved -> `active/` or `backlog/` |
+| `closed/` | Complete. Kept for history, not maintained | — |
+
+Two active tracks means two half-built systems and no decision point. Enforce the limit.
+
+`blocked/` is deliberately distinct from `backlog/`: unstarted work is backlog; work that
+*cannot proceed* is blocked. Every blocked track records what is blocking it, who can unblock
+it, what was already tried, and whether a workaround exists.
+
+## Naming Convention
+
+`NNN-kebab-case-slug` — zero-padded sequence number for ordering, slug describing the work.
+
+```
+001-core-architecture
+002-observability-alerting
+003-funding-harvesting
+```
+
+The earlier `phase-1` / `phase-1.5` / `phase-2-aave` scheme is retired. It encoded a fixed
+delivery order that no longer holds: the active track is not "phase 2" in any meaningful
+sense — it is a different strategy, on a different chain, against a different venue.
+
+**Do not rename a track directory when it changes state.** Moving `active/` -> `backlog/`
+keeps the sequence number and git history coherent; renaming would renumber the project for
+no benefit.
+
+## Planning Phase
 1. Write `spec.md` (what we're building)
 2. Write `plan.md` (how we'll build it)
 3. Write `metadata.json` (track info)
@@ -68,21 +102,36 @@ For each task in `plan.md`:
 
 ## File Structure
 
+Tracks are grouped by state. A track's folder location is its status.
+
 ```
 conductor/
 ├── tracks.md                          # Index
 ├── workflow.md                        # This file
 └── tracks/
-    ├── phase-1-core/
-    │   ├── spec.md                    # Acceptance criteria
-    │   ├── plan.md                    # Implementation tasks
-    │   └── metadata.json              # Track metadata
-    └── phase-2-aave/
-        ├── spec.md
-        ├── plan.md
-        └── metadata.json
+    ├── active/
+    │   └── 003-funding-harvesting/    # In progress, max 1
+    │       ├── spec.md                # Acceptance criteria
+    │       ├── plan.md                # Implementation tasks
+    │       └── metadata.json          # Track metadata
+    ├── backlog/
+    │   └── 002-observability-alerting/
+    │       └── README.md              # Why each track is waiting
+    ├── blocked/
+    │   └── README.md                  # What qualifies as blocked
+    └── closed/
+        └── 001-core-architecture/
+            ├── spec.md
+            ├── plan.md
+            └── metadata.json
 ```
 
-## Example: phase-1-core
+Each state folder has a `README.md` defining its entry and exit criteria and listing its
+contents.
 
-See `conductor/tracks/phase-1-core/spec.md` for a complete example.
+## Example: 003-funding-harvesting
+
+The most complete example is
+[`tracks/active/003-funding-harvesting/spec.md`](tracks/active/003-funding-harvesting/spec.md).
+For a closed track with verified completion,
+[`tracks/closed/001-core-architecture/`](tracks/closed/001-core-architecture/).

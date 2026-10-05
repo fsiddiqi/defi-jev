@@ -1,10 +1,10 @@
 {
-  "name": "phase-2-funding",
-  "title": "Phase 2: Funding Rate Harvesting (Hyperliquid)",
+  "name": "003-funding-harvesting",
+  "title": "Funding Rate Harvesting (Hyperliquid)",
   "description": "Delta-neutral funding rate harvesting agent on Hyperliquid, replacing phase-2-aave. Jev gates entries; deterministic code governs exits and all safety controls. Backtester-first sequencing.",
-  "status": "not_started",
-  "feature_branch": "phase-2-funding",
-  "started_date": null,
+  "status": "active",
+  "feature_branch": "003-funding-harvesting",
+  "started_date": "2026-10-05",
   "completed_date": null,
   "completion_commit": null,
   "priority": "P1",
@@ -18,12 +18,12 @@
     "Confidence buckets strictly monotonic across all buckets"
   ],
   "dependencies": [
-    "phase-1-core",
-    "phase-1.5-monitoring"
+    "001-core-architecture",
+    "002-observability-alerting"
   ],
   "blocked_by": [],
   "blocks": [
-    "phase-3-production"
+    "004-production-hardening"
   ],
   "replaces": {
     "track": "phase-2-aave",
@@ -44,11 +44,11 @@
   "verified_baseline": {
     "captured_date": "2026-10-05",
     "base_block": 52214428,
-    "mean_hourly_funding": 1.125e-5,
+    "mean_hourly_funding": 1.125e-05,
     "mean_annualized_pct": 9.86,
     "hours_positive": "470/500",
-    "max_hourly_funding": 5.12e-5,
-    "min_hourly_funding": -1.73e-5,
+    "max_hourly_funding": 5.12e-05,
+    "min_hourly_funding": -1.73e-05,
     "benchmark": "Passive delta-neutral hold yields ~9.86%/yr gross. This is the hurdle the agent must clear after gas, fees, and 30bps round-trip slippage."
   },
   "constraints": [

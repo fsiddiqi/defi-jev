@@ -1,7 +1,7 @@
 # Phase 2: Funding Rate Harvesting — Implementation Plan
 
 Spec: [`spec.md`](./spec.md) · Technical spec:
-[`docs/FUNDING-HARVEST-SPEC.md`](../../../docs/FUNDING-HARVEST-SPEC.md)
+[`docs/FUNDING-HARVEST-SPEC.md`](../../../../docs/FUNDING-HARVEST-SPEC.md)
 
 ## Status: 📋 NOT STARTED
 
@@ -109,9 +109,13 @@ reintroduced by copy-paste:
 - [ ] Profit model used an 8% bonus against the real 5%, ignored the close factor, the
       protocol fee, and the collateral→debt swap entirely
 
-## Deprecated
+## Predecessor tracks
 
-- [ ] `phase-2-aave` — superseded. Rationale in `spec.md`. Retained in git history; liquidate
-      only if funding fails its Phase 2.1 gate
-- [ ] `phase-1.5-monitoring` — code shipped in `b1ec7e7`, but `plan.md` checkboxes are stale
-      and `/metrics` is still unimplemented. Clean up or fold into 2.2
+- [ ] `phase-2-aave` — superseded, never started. Rationale in `spec.md`. Retained in git
+      history; revive only if funding fails its Phase 2.1 gate
+- [x] `001-core-architecture` — [closed](../../closed/001-core-architecture/). Complete in
+      `889924e`. Infrastructure reused here; liquidation domain logic rewritten
+- [x] `002-observability-alerting` — moved to
+      [backlog](../../backlog/002-observability-alerting/). Dashboard, Telegram, and file
+      logging shipped in `b1ec7e7`; remaining depth work (`src/metrics.ts`, `/metrics`,
+      tests, log rotation) is not a blocker for this track

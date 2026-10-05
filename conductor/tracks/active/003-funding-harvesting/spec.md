@@ -3,8 +3,8 @@
 Build a delta-neutral funding rate harvesting agent on Hyperliquid, replacing the
 `phase-2-aave` liquidation plan.
 
-Full technical specification: [`docs/FUNDING-HARVEST-SPEC.md`](../../../docs/FUNDING-HARVEST-SPEC.md).
-Rationale for abandoning liquidations: [`docs/STRATEGIES.md`](../../../docs/STRATEGIES.md).
+Full technical specification: [`docs/FUNDING-HARVEST-SPEC.md`](../../../../docs/FUNDING-HARVEST-SPEC.md).
+Rationale for abandoning liquidations: [`docs/STRATEGIES.md`](../../../../docs/STRATEGIES.md).
 
 ## Why this replaces phase-2-aave
 

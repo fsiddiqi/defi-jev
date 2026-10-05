@@ -1,46 +1,75 @@
 # Conductor Tracks
 
-Active development tracks for defi-jev.
+Development tracks for defi-jev, organised by state. Index of record:
+[tracks/](tracks/)
+
+## Structure
+
+Tracks live in one of four state folders. A track's location is its status — there is no
+separate status field to keep in sync.
+
+```
+conductor/tracks/
+├── active/     in progress (max 1)
+├── backlog/    understood, not current priority
+├── blocked/    cannot proceed; needs an external unblock
+└── closed/     complete; kept for history, not maintained
+```
 
 ## Active
 
-- **[phase-1-core](tracks/phase-1-core/)** — Core architecture ✅ COMPLETE
-  - Jev classifier (mock + real API)
-  - Risk gate framework
-  - Paper executor
-  - Full test coverage
+| Track | Status | Priority | Summary |
+|---|---|---|---|
+| [003-funding-harvesting](tracks/active/003-funding-harvesting/) | 🟢 active | P1 | Delta-neutral funding carry on Hyperliquid |
 
-- **[phase-1.5-monitoring](tracks/phase-1.5-monitoring/)** — Observability 🟡 IN PROGRESS
-  - SSE dashboard (port 3000)
-  - Telegram alerts (immediate + digest)
-  - Structured file logging
-  - Health endpoint + Prometheus metrics
-  - ⚠️ Code shipped in `b1ec7e7`; `plan.md` checkboxes stale and `/metrics` still unimplemented
+Backtester-first. Phase 2.1 is a blocking gate: it must beat passive delta-neutral hold
+(~9.86%/yr gross) before any execution code is written. Replaces the `phase-2-aave`
+liquidation plan — see [docs/STRATEGIES.md](../docs/STRATEGIES.md) for why liquidations have
+negative expected value at current infrastructure.
 
-## Planned
+## Backlog
 
-- **[phase-2-funding](tracks/phase-2-funding/)** — Funding rate harvesting (Hyperliquid) 📋 NEXT
-  - Replaces `phase-2-aave` — see [docs/STRATEGIES.md](../docs/STRATEGIES.md) for rationale
-  - Backtester first (blocking gate) → live data pipeline → Jev integration → execution → calibration
-  - Jev gates entries; deterministic code governs exits and all circuit breakers
-  - Must beat passive delta-neutral hold (~9.86%/yr gross) to justify itself
+| Track | Summary | Why waiting |
+|---|---|---|
+| [002-observability-alerting](tracks/backlog/002-observability-alerting/) | SSE dashboard, Telegram alerts, pino logging | Mostly shipped in `b1ec7e7`. Remaining: `src/metrics.ts`, `/metrics`, tests, log rotation, Telegram digest |
 
-- **phase-3-production** — Production hardening
-  - Error recovery
-  - Rate limiting
-  - Mempool monitoring
+## Blocked
 
-## Deprecated
+None. Criteria for what qualifies are documented in
+[tracks/blocked/README.md](tracks/blocked/README.md).
 
-- **phase-2-aave** — Real Aave integration ❌ SUPERSEDED by `phase-2-funding`
-  - Aave V3 is $566M of Base's $6.44B TVL; Morpho Blue is 8× larger
-  - Contested liquidations are won on latency, not analysis
-  - Retained in git history — reactivate only if funding fails its backtest gate
+## Closed
 
-## Archived
+| Track | Completed | Commit |
+|---|---|---|
+| [001-core-architecture](tracks/closed/001-core-architecture/) | 2026-09-22 | `889924e` |
 
-(None yet)
+## Superseded
+
+- **phase-2-aave** — real Aave integration. Never started. Superseded by `003-funding-harvesting`
+  because Aave V3 is $566M of Base's $6.44B TVL while Morpho Blue holds $4.565B at
+  $271.7k/day in fees against Aave's $32.7k, and contested liquidations are decided on
+  latency rather than analysis. Retained in git history; reactivate only if funding fails its
+  backtest gate.
+
+## Naming convention
+
+`NNN-kebab-case-slug`, where `NNN` is a zero-padded sequence number for ordering and the
+slug describes the work:
+
+- `001-core-architecture`
+- `002-observability-alerting`
+- `003-funding-harvesting`
+
+The older `phase-1` / `phase-1.5` / `phase-2-aave` scheme is retired. It implied a fixed
+delivery order that no longer holds — the active track is not "phase 2" in any meaningful
+sense, it is a different strategy on a different chain against a different venue.
+
+Track directories are **not** renamed when a track changes state. Moving `active/` →
+`backlog/` keeps the sequence number and the history coherent; renaming would renumber the
+project for no benefit.
 
 ---
 
-See [workflow.md](workflow.md) for the spec-driven development process.
+See [workflow.md](workflow.md) for the spec-driven development process, the track lifecycle,
+and the plan/task conventions.

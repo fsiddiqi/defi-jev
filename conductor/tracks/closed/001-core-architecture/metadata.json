@@ -1,9 +1,9 @@
 {
-  "name": "phase-1-core",
-  "title": "Phase 1: Core Architecture",
+  "name": "001-core-architecture",
+  "title": "Core Architecture",
   "description": "Build the foundation: state models, Jev classifier, risk gates, paper executor, and event system",
-  "status": "complete",
-  "feature_branch": "phase-1-core",
+  "status": "closed",
+  "feature_branch": "001-core-architecture",
   "started_date": "2026-09-22",
   "completed_date": "2026-09-22",
   "completion_commit": "889924e",
@@ -19,6 +19,7 @@
   "dependencies": [],
   "blocked_by": [],
   "blocks": [
-    "phase-2-aave"
-  ]
+    "003-funding-harvesting"
+  ],
+  "completed_note": "Delivered in 889924e. Domain code is superseded by 003-funding-harvesting; infrastructure modules are reused there."
 }

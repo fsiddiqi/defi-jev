@@ -1,9 +1,9 @@
 {
-  "name": "phase-1.5-monitoring",
-  "title": "Phase 1.5: Monitoring & Alerting",
+  "name": "002-observability-alerting",
+  "title": "Observability & Alerting",
   "description": "Add observability: real-time dashboard, Telegram alerts, structured logging, health/metrics endpoints",
-  "status": "in_progress",
-  "feature_branch": "phase-1.5-monitoring",
+  "status": "backlog",
+  "feature_branch": "002-observability-alerting",
   "started_date": "2026-10-05",
   "completed_date": null,
   "completion_commit": null,
@@ -17,10 +17,11 @@
     "/metrics exposes Prometheus metrics"
   ],
   "dependencies": [
-    "phase-1-core"
+    "001-core-architecture"
   ],
   "blocked_by": [],
   "blocks": [
-    "phase-2-aave"
-  ]
+    "003-funding-harvesting"
+  ],
+  "remaining": "Dashboard, Telegram, and file logging shipped in b1ec7e7. Outstanding: src/metrics.ts (prom-client installed but never imported), /metrics endpoint, SSE + Telegram tests, Telegram periodic digest, log rotation. plan.md checkboxes are stale."
 }
