@@ -29,6 +29,19 @@ export interface LiquidationCandidate {
   cascadeScore: number;
   competitionLast10Blocks: number;
   ageBlocks: number;
+  // Price facts — no fiction. What we can ACTUALLY sell seized collateral for.
+  oraclePriceUsd: number | null;   // USD per collateral token from the market's on-chain oracle (price())
+  oracleAgeSec: number | null;     // true on-chain oracle age from latestRoundData()/updatedAt(), null if unknowable
+  dexPriceUsd: number | null;      // USD per collateral token on the best on-chain DEX pool (Aerodrome V2/V3), if any
+  exitLiquidityUsd: number | null; // one-sided pool depth in USD at spot
+  priceSource: "oracle" | "dex" | "none"; // authority for the EXIT price
+  saleVenue: string | null;        // e.g. "aerodrome-v2 USR/USDC (stable)"
+  /**
+   * At-risk watchlist row (HF in (1.0, WATCH_HF_MAX]): not yet liquidatable.
+   * Judged for a WARM verdict so the decision is pre-computed the instant the
+   * position crosses into liquidation — never executes on its own.
+   */
+  watch: boolean;
 }
 
 export type JevAction = "EXECUTE" | "QUEUE" | "SKIP";

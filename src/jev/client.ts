@@ -1,5 +1,5 @@
 import type { LiquidationCandidate, JevDecision, JevAction, ReasoningCode, SanityCode } from "../types.js";
-import { gasCostUsd, projectedProfitUsd } from "../profit.js";
+import { ETH_USD_ASSUMED, gasCostUsd, projectedProfitUsd, salePriceRatio } from "../profit.js";
 
 // ── TypeSafe/Jev API types ────────────────────────────────────────────────────
 
@@ -60,8 +60,9 @@ export interface JevCallResult {
 }
 
 // State structure sent to Jev - all candidates in one batched call
-function buildBatchState(candidates: LiquidationCandidate[]): object {
+function buildBatchState(candidates: LiquidationCandidate[], ethPriceUsd: number = ETH_USD_ASSUMED): object {
   const maxHfMismatchPct = Number(process.env.MAX_HF_MISMATCH_PCT ?? "0.30");
+  const exitDepthFraction = Number(process.env.EXIT_DEPTH_FRACTION ?? "0.05");
   return {
     candidates: candidates.map((c, i) => {
       const coll = c.collateralBalanceUsd;
@@ -97,9 +98,9 @@ function buildBatchState(candidates: LiquidationCandidate[]): object {
         borrowUsd: borrow,
         seizePct: c.seizePct * 100,
         expectedSeizeUsd: c.expectedSeizeUsd,
-        gasCostUsd: gasCostUsd(c),
-        projectedProfitUsd: projectedProfitUsd(c),
-        profitToSeizeRatio: c.expectedSeizeUsd > 0 ? projectedProfitUsd(c) / c.expectedSeizeUsd : null,
+        gasCostUsd: gasCostUsd(c, ethPriceUsd),
+        projectedProfitUsd: projectedProfitUsd(c, ethPriceUsd),
+        profitToSeizeRatio: c.expectedSeizeUsd > 0 ? projectedProfitUsd(c, ethPriceUsd) / c.expectedSeizeUsd : null,
         oracleFreshnessSec: c.oracleFreshnessSec,
         gasPriceGwei: c.gasPriceGwei,
         estExecutionGas: c.estimatedExecutionGas,
@@ -107,6 +108,21 @@ function buildBatchState(candidates: LiquidationCandidate[]): object {
         cascadeScore: c.cascadeScore,
         competitionLast10Blocks: c.competitionLast10Blocks,
         ageBlocks: c.ageBlocks,
+        // Price facts (on-chain, no fiction)
+        priceSource: c.priceSource,               // "oracle" | "dex" | "none"
+        oracleAgeSec: c.oracleAgeSec,             // true feed age
+        oraclePriceUsdPerToken: c.oraclePriceUsd, // protocol liquidation price
+        dexPriceUsdPerToken: c.dexPriceUsd,       // real Aerodrome spot, if a pool was found
+        exitLiquidityUsd: c.exitLiquidityUsd,     // one-sided pool depth
+        exitCapUsd: c.exitLiquidityUsd !== null && c.exitLiquidityUsd > 0
+          ? c.exitLiquidityUsd * exitDepthFraction
+          : null,
+        salePriceRatio: salePriceRatio(c),        // sell vs liquidate price
+        saleVenue: c.saleVenue,
+        // At-risk watchlist row (HF in (1.0, 1.30]): NOT yet liquidatable. The
+        // verdict is warm-state — it applies the moment the position crosses
+        // into liquidation. Judge it exactly like a liquidatable candidate.
+        atRisk: c.watch,
         sanity: {
           seizeToCollateralRatio: coll > 0 ? c.expectedSeizeUsd / coll : null,
           seizeExceedsCollateral: c.expectedSeizeUsd > coll,
@@ -168,18 +184,18 @@ const MAX_GAS_PCT_OF_PROFIT = Number(process.env.GAS_COST_PCT_OF_PROFIT_MAX ?? "
 
 const ACTION_INSTRUCTIONS = [
   "Decide the fate of this candidate. Hard checks - ALL must pass for EXECUTE/QUEUE:",
-  "1. DATA: HF was pre-verified upstream (consistent). SKIP if sanity.seizeExceedsCollateral or sanity.isDustCollateral (code data_inconsistent).",
+  "1. DATA: HF was pre-verified upstream (consistent). atRisk=true means HF > 1.0 so the position is NOT yet liquidatable — judge EXECUTE-worthiness as warm-state for when it crosses, exactly as if it were liquidatable. SKIP if sanity.seizeExceedsCollateral or sanity.isDustCollateral (code data_inconsistent).",
   "2. PROFIT: projectedProfitUsd >= thresholds.minProfitUsd and gasCostUsd <= thresholds.maxGasPctOfProfit x projectedProfitUsd.",
   "3. SIZE: expectedSeizeUsd >= thresholds.minSeizeUsd.",
-  "4. REALIZABILITY: seized collateral must be sellable for profit to be real. collateralTier: stable/bluechip/lrt saleable (EXECUTE-eligible); listed (USR, wbCOIN) = known venue, thin-but-real -> default QUEUE unless size is small enough to clear; long-tail (RSS, RLP, REIT, PT-*) = no verifiable market -> SKIP.",
+  "4. REALIZABILITY: profit is REAL only when the seized collateral can actually be sold. priceSource 'oracle' (stable/bluechip/lrt — deep real markets) = EXECUTE-eligible; 'dex' = a real on-chain Aerodrome pool was found and priced -> EXECUTE-eligible only if expectedSeizeUsd <= exitCapUsd (seize too big for the pool book is not executable); 'none' (listed/long-tail with NO verifiable pool) = projectedProfitUsd is $0 -> SKIP.",
   "5. FRESHNESS: oracleFreshnessSec fresh (morpho ~30s, ionic ~300s); priceMove30mPct large -> SKIP.",
   "EXECUTE only if ALL pass, numbers unambiguous, confidence high (~0.7+). QUEUE if all pass but one soft signal is marginal. Otherwise SKIP (including under uncertainty).",
 ].join("\n");
 
 const ACTION_CRITERIA: Record<JevAction, string> = {
-  EXECUTE: "All 5 hard checks pass, numbers unambiguous, confident (~0.7+).",
-  QUEUE: "All 5 hard checks pass but one soft signal marginal (competition/oracle age/liquidity).",
-  SKIP: "Any hard check fails, evidence ambiguous, or uncertain - dust, unsellable tail collateral, low profit, high gas, stale oracle.",
+  EXECUTE: "All 5 hard checks pass, exit venue verified (priceSource oracle or dex with seize within exitCapUsd), numbers unambiguous, confident (~0.7+).",
+  QUEUE: "All 5 hard checks pass but one soft signal marginal (competition/oracle age/pool depth).",
+  SKIP: "Any hard check fails, evidence ambiguous, or uncertain - dust, unsellable tail collateral (priceSource none), low profit, high gas, stale oracle, seize above exitCapUsd.",
 };
 
 const REASONING_CRITERIA: Record<ReasoningCode, string> = {
@@ -220,7 +236,7 @@ const SANITY_CRITERIA: Record<SanityCode, string> = {
 const SANITY_INSTRUCTIONS = [
   "Check whether the projected economics are internally consistent and physically possible on-chain:",
   "1. sanity.seizeExceedsCollateral true -> seize_exceeds_collateral.",
-  "2. HF was pre-verified deterministically upstream; do NOT use ltv_hf_inconsistent. Oracle-priced exotic collateral whose USD value looks implausible -> oracle_price_distortion.",
+  "2. HF was pre-verified deterministically upstream; do NOT use ltv_hf_inconsistent. priceSource 'none' with projectedProfitUsd $0 is CONSISTENT (no market to sell into), not a distortion. oracle_price_distortion only for an implausible oracle-priced USD value on profitable-looking figures.",
   "3. sanity.isDustCollateral true -> collateral_dust_mismatch.",
   "4. plausible only if all above pass and figures hang together (profitToSeizeRatio sane, profit <= seize).",
   "When torn, choose the failure code: wrong-block costs nothing, wrong-go costs real money.",
@@ -261,13 +277,13 @@ export class JevClient {
   }
 
   // Evaluate a batch of candidates in a single API call
-  async evaluateBatch(candidates: LiquidationCandidate[]): Promise<JevDecision[]> {
+  async evaluateBatch(candidates: LiquidationCandidate[], ethPriceUsd: number = ETH_USD_ASSUMED): Promise<JevDecision[]> {
     if (candidates.length === 0) return [];
 
     const start = Date.now();
 
     const request: TypeSafeRequest = {
-      state: buildBatchState(candidates),
+      state: buildBatchState(candidates, ethPriceUsd),
       model: this.config.model,
       questions: makeCandidateQuestions(candidates),
     };

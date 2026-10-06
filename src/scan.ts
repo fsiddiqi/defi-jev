@@ -6,6 +6,7 @@ import {
   estimateGas,
   resolveCollateralUsd,
 } from "./lib/scanMath.js";
+import { findDexPool, readOracleAgeSec } from "./lib/prices.js";
 import {
   IONIC_INCENTIVE,
   ionicSeizedUsd,
@@ -40,6 +41,10 @@ const ORACLE_PRICE_ABI = parseAbi(["function price() view returns (uint256)"]);
 
 const PAGE_SIZE = 100;
 const MAX_PAGES = 10;
+// The at-risk band is much wider than the liquidatable set (every position
+// between HF 0.98 and 1.30); paginate deeper so we don't silently miss
+// watch positions past the first 1000 results.
+const WATCH_MAX_PAGES = Number(process.env.WATCH_MAX_PAGES ?? "30");
 const ORACLE_TTL_MS = Number(process.env.ORACLE_PRICE_TTL_SEC ?? "300") * 1000;
 
 // Morpho oracle prices barely move; cache per oracle address to keep RPC usage low.
@@ -66,6 +71,25 @@ async function getOraclePrice(client: PublicClient, oracle: `0x${string}`): Prom
 
 const MIN_SEIZE_USD = Number(process.env.MIN_SEIZE_USD ?? "500");
 
+// At-risk watchlist — positions above the liquidation line but close enough to
+// be worth a pre-computed Jev verdict for the moment they cross. The band is
+// strictly (1.0, WATCH_HF_MAX]; the liquidatable scan already owns HF < 1.0.
+const WATCH_HF_MIN = Number(process.env.WATCH_HF_MIN ?? "0.98");
+const WATCH_HF_MAX = Number(process.env.WATCH_HF_MAX ?? "1.30");
+// Only watch positions whose borrow is big enough to matter — at-risk dust
+// (small unstaked positions) is noise, not pipeline. Default $1K.
+const WATCH_MIN_BORROW_USD = Number(process.env.WATCH_MIN_BORROW_USD ?? "1000");
+// Collateral families with no real exit market (Resolv post-exploit ghost
+// tokens: USR, RSS, RLP, wbCOIN, WXRWA1, …) are already honestly blocked in
+// the liquidatable feed; keep them out of the at-risk panel so it shows real
+// collateral only. Override to "" to include everything.
+const WATCH_COLLATERAL_DENYLIST = new Set(
+  (process.env.WATCH_COLLATERAL_DENYLIST ?? "USR,RSS,RLP,wbCOIN,WXRWA1,stUSR,USDF,REIT,UBTC")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+);
+
 const gqlClient = new GraphQLClient("https://api.morpho.org/graphql");
 
 function getAssetTier(symbol: string): AssetTier {
@@ -82,7 +106,12 @@ function getAssetTier(symbol: string): AssetTier {
 
 // ── Scanners ─────────────────────────────────────────────────────────────────
 
-export async function scanMorpho(client: PublicClient, ethPriceUsd: number): Promise<LiquidationCandidate[]> {
+export async function scanMorpho(
+  client: PublicClient,
+  ethPriceUsd: number,
+  opts: { watch?: boolean } = {},
+): Promise<LiquidationCandidate[]> {
+  const watch = opts.watch ?? false;
   // Morpho official GraphQL API - no API key required
   const query = `
     query($first:Int!,$skip:Int!,$where:MarketPositionFilters) {
@@ -94,7 +123,7 @@ export async function scanMorpho(client: PublicClient, ethPriceUsd: number): Pro
             lltv
             oracle { address }
             loanAsset { symbol decimals priceUsd }
-            collateralAsset { symbol decimals priceUsd }
+            collateralAsset { symbol decimals address priceUsd }
           }
           user { address }
           state { borrowAssets borrowAssetsUsd collateral collateralUsd }
@@ -115,13 +144,15 @@ export async function scanMorpho(client: PublicClient, ethPriceUsd: number): Pro
     // keep 0; pre-Jev gate treats unknown gas as pass
   }
 
-  for (let page = 0; page < MAX_PAGES; page++) {
+  for (let page = 0; page < (watch ? WATCH_MAX_PAGES : MAX_PAGES); page++) {
     let data: any;
     try {
       data = await gqlClient.request(query, {
         first: PAGE_SIZE,
         skip: page * PAGE_SIZE,
-        where: { healthFactor_lte: 1.0, chainId_in: [8453] },
+        where: watch
+          ? { healthFactor_gte: WATCH_HF_MIN, healthFactor_lte: WATCH_HF_MAX, chainId_in: [8453] }
+          : { healthFactor_lte: 1.0, chainId_in: [8453] },
       });
     } catch {
       break; // API hiccup — keep what we have
@@ -132,7 +163,9 @@ export async function scanMorpho(client: PublicClient, ethPriceUsd: number): Pro
     totalItems += items.length;
 
     for (const p of items) {
-      if (p.healthFactor === null || p.healthFactor >= 1.0) {
+      // Liquidatable scan owns HF < 1.0; the watch scan owns HF in (1.0, max].
+      if (p.healthFactor === null) continue;
+      if (watch ? p.healthFactor <= 1.0 : p.healthFactor >= 1.0) {
         continue;
       }
 
@@ -172,7 +205,61 @@ export async function scanMorpho(client: PublicClient, ethPriceUsd: number): Pro
       collateralUsd = resolved.collateralUsd;
       const oraclePriced = resolved.oraclePriced;
 
-      console.log(`[scan] Candidate: ${p.user.address} HF=${p.healthFactor} collateral=${market.collateralAsset.symbol} loan=${market.loanAsset.symbol} borrow=$${borrowUsd.toFixed(2)} coll=$${collateralUsd.toFixed(2)}${oraclePriced ? " (oracle-priced)" : ""}`);
+      const collateralDecimals = Number(market.collateralAsset.decimals ?? 18);
+      const collateralAddress = (market.collateralAsset.address ?? "") as `0x${string}`;
+      const collateralSymbol = market.collateralAsset.symbol;
+      const collateralTier = getAssetTier(collateralSymbol);
+
+      // Keep no-exit ghost collateral (Resolv family) out of the at-risk panel —
+      // it is already honestly blocked in the liquidatable feed. And skip
+      // at-risk dust: only positions whose borrow is big enough to matter.
+      if (watch && WATCH_COLLATERAL_DENYLIST.has(collateralSymbol.toLowerCase())) {
+        continue;
+      }
+      if (watch && borrowUsd < WATCH_MIN_BORROW_USD) {
+        continue;
+      }
+
+      // USD per collateral unit at the on-chain oracle — what the protocol
+      // actually prices liquidations off. Derived from the reprice above
+      // (oracle USD / raw units), no extra RPC.
+      const rawUnits = Number(state.collateral ?? 0);
+      const oraclePriceUsd = rawUnits > 0 ? collateralUsd / (rawUnits / 10 ** collateralDecimals) : null;
+
+      // True oracle age from the feed itself (Chainlink latestRoundData or
+      // MMA updatedAt); falls back to the old default when unknowable.
+      const oracleAgeSec = market.oracle?.address
+        ? await readOracleAgeSec(client, market.oracle.address)
+        : null;
+      const oracleFreshnessSec = oracleAgeSec ?? 5;
+
+      // DEX exit venue — "no fictions, only facts": only collateral with an
+      // actual on-chain pool gets a sale price. stable/bluechip/lrt trade in
+      // deep real markets, so the oracle price IS the exit price; listed and
+      // long-tail MUST have a found pool or their profit is $0 downstream.
+      let dexPriceUsd: number | null = null;
+      let exitLiquidityUsd: number | null = null;
+      let saleVenue: string | null = null;
+      let priceSource: "oracle" | "dex" | "none" = "oracle";
+      if (collateralTier === "listed" || collateralTier === "long-tail") {
+        const quoteUsdMap: Record<string, number> = {
+          [USDC_ADDRESS.toLowerCase()]: 1,
+          [WETH_ADDRESS.toLowerCase()]: ethPriceUsd,
+        };
+        const pool = collateralAddress
+          ? await findDexPool(client, collateralAddress, collateralDecimals, collateralSymbol, quoteUsdMap)
+          : null;
+        if (pool) {
+          dexPriceUsd = pool.dexPriceUsd;
+          exitLiquidityUsd = pool.exitLiquidityUsd;
+          saleVenue = pool.venue;
+          priceSource = "dex";
+        } else {
+          priceSource = "none";
+        }
+      }
+
+      console.log(`[scan] Candidate: ${p.user.address} HF=${p.healthFactor} collateral=${collateralSymbol} loan=${market.loanAsset.symbol} borrow=$${borrowUsd.toFixed(2)} coll=$${collateralUsd.toFixed(2)}${oraclePriced ? " (oracle-priced)" : ""} price=${priceSource}${saleVenue ? ` @ ${saleVenue} depth=$${exitLiquidityUsd?.toFixed(0)}` : ""}${priceSource === "none" ? " (no exit venue)" : ""}`);
 
       if (collateralUsd === 0 || borrowUsd === 0) {
         console.log(`[scan] Skipping ${p.user.address}: zero USD values (collateral=${collateralUsd} borrow=${borrowUsd})`);
@@ -193,8 +280,8 @@ export async function scanMorpho(client: PublicClient, ethPriceUsd: number): Pro
       candidates.push({
         protocol: "morpho-blue",
         borrower: p.user.address as `0x${string}`,
-        collateralAsset: market.collateralAsset.symbol,
-        collateralTier: getAssetTier(market.collateralAsset.symbol),
+        collateralAsset: collateralSymbol,
+        collateralTier,
         borrowAsset: market.loanAsset.symbol,
         currentLtv: collateralUsd > 0 ? borrowUsd / collateralUsd : 0,
         liquidationThreshold: lltv,
@@ -203,20 +290,27 @@ export async function scanMorpho(client: PublicClient, ethPriceUsd: number): Pro
         borrowBalanceUsd: borrowUsd,
         seizePct,
         expectedSeizeUsd: expectedSeize,
-        oracleFreshnessSec: 5,
+        oracleFreshnessSec,
         gasPriceGwei,
         estimatedExecutionGas: estimateGas("morpho-blue"),
         recentPriceMovePct30m: 0,
         cascadeScore: 0,
         competitionLast10Blocks: 0,
         ageBlocks: 999,
+        oraclePriceUsd,
+        oracleAgeSec,
+        dexPriceUsd,
+        exitLiquidityUsd,
+        priceSource,
+        saleVenue,
+        watch,
       });
     }
 
     if (items.length < PAGE_SIZE) break;
   }
 
-  console.log(`[scan] Morpho API returned ${totalItems} liquidatable positions (${pages} page${pages === 1 ? "" : "s"}, ${candidates.length} pass seize >= $${MIN_SEIZE_USD})`);
+  console.log(`[scan] Morpho API returned ${totalItems} ${watch ? "at-risk (HF " + WATCH_HF_MIN + "–" + WATCH_HF_MAX + ")" : "liquidatable"} positions (${pages} page${pages === 1 ? "" : "s"}, ${candidates.length} pass seize >= $${MIN_SEIZE_USD})`);
   return candidates;
 }
 
@@ -279,6 +373,13 @@ export async function scanIonicChronic(client: PublicClient, ethPriceUsd: number
         cascadeScore: 0,
         competitionLast10Blocks: 0,
         ageBlocks: 999,
+        oraclePriceUsd: null,
+        oracleAgeSec: null,
+        dexPriceUsd: null,
+        exitLiquidityUsd: null,
+        priceSource: "none",
+        saleVenue: null,
+        watch: false,
       });
     } catch {
       // Skip on error
@@ -289,10 +390,11 @@ export async function scanIonicChronic(client: PublicClient, ethPriceUsd: number
 }
 
 export async function scanAll(client: PublicClient, ethPriceUsd: number): Promise<LiquidationCandidate[]> {
-  const [morpho, ionic] = await Promise.all([
+  const [morpho, watch, ionic] = await Promise.all([
     scanMorpho(client, ethPriceUsd),
+    scanMorpho(client, ethPriceUsd, { watch: true }),
     scanIonicChronic(client, ethPriceUsd),
   ]);
   // Honest projected profit first — the number Jev sees and the feed sorts by.
-  return [...morpho, ...ionic].sort((a, b) => projectedProfitUsd(b) - projectedProfitUsd(a));
+  return [...morpho, ...watch, ...ionic].sort((a, b) => projectedProfitUsd(b, ethPriceUsd) - projectedProfitUsd(a, ethPriceUsd));
 }

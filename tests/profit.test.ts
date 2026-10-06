@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  depthImpactBps,
+  ETH_USD_ASSUMED,
+  exitCapUsd,
   gasCostUsd,
   IONIC_INCENTIVE,
   ionicSeizedUsd,
@@ -7,13 +10,14 @@ import {
   morphoIncentiveFactor,
   morphoSeizedUsd,
   projectedProfitUsd,
+  salePriceRatio,
   SLIPPAGE_BPS,
 } from "../src/profit.js";
 import type { LiquidationCandidate } from "../src/types.js";
 
 /** Candidate fixture. projectedProfitUsd/expectedSeizeUsd now DERIVE everything
- *  from balances + liquidationThreshold, so expectedSeizeUsd/seizePct in the
- *  fixture are informational only (what the pipeline would have computed). */
+ *  from balances + liquidationThreshold + price facts, so fixture values are
+ *  informational only (what the pipeline would have computed). */
 function cand(over: Partial<LiquidationCandidate>): LiquidationCandidate {
   return {
     protocol: "morpho-blue",
@@ -35,21 +39,35 @@ function cand(over: Partial<LiquidationCandidate>): LiquidationCandidate {
     cascadeScore: 0,
     competitionLast10Blocks: 0,
     ageBlocks: 999,
+    oraclePriceUsd: 1.0,        // RSS oracle nominal peg
+    oracleAgeSec: 30,
+    dexPriceUsd: null,
+    exitLiquidityUsd: null,
+    priceSource: "none",        // default: no verifiable exit venue
+    saleVenue: null,
+    watch: false,
     ...over,
   };
 }
 
-const RSS = cand({}); // 0xbF4F29, lltv 0.90
+const RSS = cand({}); // 0xbF4F29, lltv 0.90 — long-tail, no pool
 const USR_BIG = cand({
   collateralAsset: "USR",
+  collateralTier: "listed",
   liquidationThreshold: 0.915,
   collateralBalanceUsd: 773_674.44, // 0xA85f4F (oracle-priced)
   borrowBalanceUsd: 20_496_279.15,
+  oraclePriceUsd: 1.0000492,
 });
 
 describe("gasCostUsd", () => {
-  it("uses estimatedExecutionGas * gasPriceGwei * 1e-9 * $3000/ETH", () => {
+  it("defaults to $3000/ETH", () => {
     expect(gasCostUsd(cand({ estimatedExecutionGas: 900_000, gasPriceGwei: 0.02 }))).toBeCloseTo(0.054, 6);
+    expect(ETH_USD_ASSUMED).toBe(3000);
+  });
+  it("uses the LIVE ETH price when passed (the number the UI already shows)", () => {
+    expect(gasCostUsd(cand({ estimatedExecutionGas: 900_000, gasPriceGwei: 0.02 }), 2687.55))
+      .toBeCloseTo(900_000 * 0.02 * 1e-9 * 2687.55, 6);
   });
 });
 
@@ -90,38 +108,84 @@ describe("morphoSeizedUsd - whole position, no close factor", () => {
   });
 });
 
-describe("projectedProfitUsd - honest Morpho economics (pinned)", () => {
-  it("RSS 0xbF4F29: ~$41,999 edge - gas - slippage, NOT $192,967 (=whole seize)", () => {
-    // seize 1,399,976 * 3% edge = 41,999.28; slippage 50bps on seized; gas ~$0.05
-    const profit = projectedProfitUsd(RSS);
-    const slippage = (1_399_976.15 * SLIPPAGE_BPS) / 10_000;
-    expect(profit).toBeCloseTo(41_999.28 - 0.054 - slippage, 1);
-    expect(profit).toBeLessThan(42_500);
-    expect(profit).toBeGreaterThan(34_000);
+// ── Realizability: "no fictions, only facts" ─────────────────────────────────
+
+describe("exit venue gating (real sale prices, never invented)", () => {
+  it("stable/bluechip/lrt: oracle price IS the exit price — profit is the on-chain edge", () => {
+    // 2.55% edge on a $10K seize, 50bps slip, gas ~$0.05
+    const c = cand({
+      collateralAsset: "USDC", collateralTier: "stable",
+      liquidationThreshold: 0.915, borrowBalanceUsd: 5_000_000,
+      collateralBalanceUsd: 10_000, expectedSeizeUsd: 10_000,
+      oraclePriceUsd: 1.0, priceSource: "oracle",
+    });
+    expect(projectedProfitUsd(c)).toBeCloseTo(10_000 * 0.0255 - 0.054 - 50, 1);
   });
 
-  it("USR 0xA85f4F: ~$19,729 edge on the $773.7K seize, not $769,831", () => {
-    // seize 773,674 * 2.55% = 19,728.70; slippage 3,868.37; gas ~$0.05
-    const profit = projectedProfitUsd(USR_BIG);
-    const slippage = (773_674.44 * SLIPPAGE_BPS) / 10_000;
-    expect(profit).toBeCloseTo(19_728.70 - 0.054 - slippage, 1);
+  it("RSS (long-tail, NO pool): profit is honestly $0 — no sale venue, no fiction", () => {
+    expect(projectedProfitUsd(RSS)).toBe(0);
+  });
+  it("USR $774K (listed, NO pool found): profit is honestly $0", () => {
+    expect(projectedProfitUsd(USR_BIG)).toBe(0);
   });
 
-  it("profit is a fraction of the seized value, bounded by the on-chain edge", () => {
-    for (const c of [RSS, USR_BIG]) {
-      // edge is 2.55%-3.00% of seized for these markets; never 100%
-      expect(projectedProfitUsd(c)).toBeLessThanOrEqual(0.031 * c.collateralBalanceUsd);
-      expect(projectedProfitUsd(c)).toBeGreaterThan(0.02 * c.collateralBalanceUsd);
-    }
+  it("a pool exists but seized size exceeds exitCapUsd (5% of depth): $0 — cannot clear the book", () => {
+    // $2M one-sided depth -> cap $100K; RSS seize is $1.4M
+    const withPool = cand({
+      dexPriceUsd: 0.97, exitLiquidityUsd: 2_000_000, priceSource: "dex",
+      saleVenue: "aerodrome-v2 RSS/USDC (volatile)",
+    });
+    expect(exitCapUsd(withPool.exitLiquidityUsd)).toBe(100_000);
+    expect(projectedProfitUsd(withPool)).toBe(0);
   });
 
-  it("is positive (no gas blowout) for every liquidatable Morpho position", () => {
-    expect(projectedProfitUsd(RSS)).toBeGreaterThan(0);
-    expect(projectedProfitUsd(USR_BIG)).toBeGreaterThan(0);
+  it("sale-priced profit: seized * (dex/oracle - 1/f) - gas - depth impact", () => {
+    // USR mid-size: $10K seize, $1M depth (cap $50K), sell at 0.9998 vs oracle
+    // 1.0000492 (ratio 0.99975), lltv 0.915 -> 1/f = 0.9745.
+    // gross = 10,000 * 0.0252508 = 252.51; impact = 50 + (10K/1M)*100 = 51bps.
+    const c = cand({
+      collateralAsset: "USR", collateralTier: "listed",
+      liquidationThreshold: 0.915, oraclePriceUsd: 1.0000492,
+      dexPriceUsd: 0.9998, exitLiquidityUsd: 1_000_000, priceSource: "dex",
+      saleVenue: "aerodrome-v2 USR/USDC (stable)",
+      borrowBalanceUsd: 500_000, collateralBalanceUsd: 10_000, expectedSeizeUsd: 10_000,
+    });
+    expect(salePriceRatio(c)).toBeCloseTo(0.9998 / 1.0000492, 6);
+    expect(depthImpactBps(10_000, 1_000_000)).toBeCloseTo(51, 9);
+    expect(projectedProfitUsd(c)).toBeCloseTo(10_000 * (0.9998 / 1.0000492 - 0.9745) - 0.054 - 51, 1);
+  });
+
+  it("projected profit is positive for every EXIT-VERIFIED liquidatable Morpho position at oracle parity", () => {
+    const c = cand({
+      collateralTier: "bluechip", collateralAsset: "WETH",
+      priceSource: "oracle", collateralBalanceUsd: 10_000, borrowBalanceUsd: 500_000,
+      expectedSeizeUsd: 10_000,
+    });
+    expect(projectedProfitUsd(c)).toBeGreaterThan(0);
   });
 });
 
-describe("projectedProfitUsd - Ionic (compound-v2 style)", () => {
+describe("exit price helpers", () => {
+  it("salePriceRatio: dex/oracle when both known, else 1", () => {
+    expect(salePriceRatio(cand({ dexPriceUsd: 0.97, oraclePriceUsd: 1.0, priceSource: "dex" }))).toBeCloseTo(0.97, 9);
+    expect(salePriceRatio(cand({ dexPriceUsd: null, oraclePriceUsd: 1.0, priceSource: "none" }))).toBe(1);
+    expect(salePriceRatio(cand({ dexPriceUsd: 0.99, oraclePriceUsd: null, priceSource: "dex" }))).toBe(1);
+  });
+  it("exitCapUsd scales the one-sided depth by EXIT_DEPTH_FRACTION (default 5%)", () => {
+    expect(exitCapUsd(2_000_000)).toBe(100_000);
+    expect(exitCapUsd(null)).toBe(0);
+    expect(exitCapUsd(0)).toBe(0);
+  });
+  it("depthImpactBps: flat 50bps + 100bps per 1% of book consumed, capped at 1000", () => {
+    expect(depthImpactBps(10_000, 1_000_000)).toBeCloseTo(51, 9);
+    expect(depthImpactBps(100_000, 1_000_000)).toBeCloseTo(60, 9);
+    expect(depthImpactBps(1_000_000, 1_000_000)).toBe(150);
+    expect(depthImpactBps(15_000_000, 1_000_000)).toBe(1000); // capped
+    expect(depthImpactBps(10_000, 0)).toBe(SLIPPAGE_BPS);
+  });
+});
+
+describe("projectedProfitUsd - Ionic (compound-v2 style, unchanged)", () => {
   const ionicCand = (over: Partial<LiquidationCandidate>) =>
     cand({ protocol: "ionic", liquidationThreshold: 0.9, ...over });
 

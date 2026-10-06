@@ -17,10 +17,20 @@ export interface FeedEntry {
   collateralAsset: string;
   borrowAsset: string;
   currentLtv: number;
+  healthFactor: number;
   expectedSeizeUsd: number;
-  /** seize − est. gas − 50bps slippage (same math as the post-Jev profit gate) */
+  /** seize − est. gas − slippage (same math as the post-Jev profit gate) */
   projectedProfitUsd: number;
   gasPriceGwei: number;
+  /** Exit price authority: oracle | dex | none (none = unrealizable, profit 0) */
+  priceSource: "oracle" | "dex" | "none";
+  exitLiquidityUsd: number | null;
+  /** real Aerodrome spot, USD per collateral token (pool found), else null */
+  dexPriceUsd: number | null;
+  /** protocol liquidation price, USD per collateral token (from price()) */
+  oraclePriceUsd: number | null;
+  saleVenue: string | null;
+  oracleAgeSec: number | null;
   decision: {
     action: string;
     confidence: number;
@@ -28,9 +38,11 @@ export interface FeedEntry {
     priority: number;
     sanity?: string;
   } | null;
-  gateResult: "passed" | "blocked" | "pending" | null;
+  gateResult: "passed" | "blocked" | "pending" | "watch" | null;
   gateReason?: string;
   executed?: boolean;
+  /** At-risk rows small enough + verifiable enough for a solo bot to play (see lib/watch.ts) */
+  playable?: boolean;
 }
 
 export interface BotState {
@@ -47,9 +59,10 @@ export interface BotState {
   nextJevRefreshAt: number | null;
   jevApiCallsLastCycle: number;
   cycle: number;
+  playable: { capUsd: number; minProfitUsd: number; maxOracleAgeSec: number } | null;
 }
 
-const MAX_FEED = 100;
+const MAX_FEED = 600;
 
 const state: BotState = {
   mode: "unknown",
@@ -65,23 +78,40 @@ const state: BotState = {
   nextJevRefreshAt: null,
   jevApiCallsLastCycle: 0,
   cycle: 0,
+  playable: null,
 };
 
 export function getState(): BotState {
   return state;
 }
 
+// A feed row is one (borrower, market) pair. A borrower with positions in two
+// markets (e.g. USR and wbCOIN) must get two rows — keying by borrower alone
+// made one market's venue/depth/decision overwrite the other's.
+export function feedKey(c: { borrower: string; collateralAsset: string; borrowAsset: string }): string {
+  return `${c.borrower.toLowerCase()}|${c.collateralAsset}|${c.borrowAsset}`;
+}
+
 export function addFeedEntry(entry: Omit<FeedEntry, "scans">): void {
-  const existing = state.feed.find((e) => e.borrower === entry.borrower);
+  const key = feedKey(entry);
+  const existing = state.feed.find((e) => feedKey(e) === key);
   if (existing) {
-    // Same borrower seen again — bump scan count, refresh dynamic fields,
-    // move to top. Keep the previous decision visible until the new one lands.
+    // Same (borrower, market) seen again — bump scan count, refresh dynamic
+    // fields, move to top. Keep the previous decision visible until the new
+    // one lands.
     existing.scans++;
     existing.timestamp = entry.timestamp;
     existing.currentLtv = entry.currentLtv;
+    existing.healthFactor = entry.healthFactor;
     existing.expectedSeizeUsd = entry.expectedSeizeUsd;
     existing.projectedProfitUsd = entry.projectedProfitUsd;
     existing.gasPriceGwei = entry.gasPriceGwei;
+    existing.priceSource = entry.priceSource;
+    existing.exitLiquidityUsd = entry.exitLiquidityUsd;
+    existing.saleVenue = entry.saleVenue;
+    existing.oracleAgeSec = entry.oracleAgeSec;
+    existing.dexPriceUsd = entry.dexPriceUsd;
+    existing.oraclePriceUsd = entry.oraclePriceUsd;
     state.feed = [existing, ...state.feed.filter((e) => e !== existing)];
   } else {
     state.feed.unshift({ ...entry, scans: 1 });
@@ -90,10 +120,10 @@ export function addFeedEntry(entry: Omit<FeedEntry, "scans">): void {
 }
 
 export function updateFeedEntry(
-  borrower: string,
+  candidate: { borrower: string; collateralAsset: string; borrowAsset: string },
   updates: Partial<FeedEntry>,
 ): void {
-  const entry = state.feed.find((e) => e.borrower === borrower);
+  const entry = state.feed.find((e) => feedKey(e) === feedKey(candidate));
   if (entry) Object.assign(entry, updates);
 }
 

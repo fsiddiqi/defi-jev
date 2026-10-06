@@ -24,6 +24,13 @@ function cand(over: Partial<LiquidationCandidate>): LiquidationCandidate {
     cascadeScore: 0,
     competitionLast10Blocks: 0,
     ageBlocks: 999,
+    oraclePriceUsd: null,
+    oracleAgeSec: null,
+    dexPriceUsd: null,
+    exitLiquidityUsd: null,
+    priceSource: "none",
+    saleVenue: null,
+    watch: false,
     ...over,
   };
 }

@@ -31,6 +31,13 @@ export function candidateContextHash(candidate: LiquidationCandidate): string {
     candidate.cascadeScore.toFixed(6),
     candidate.competitionLast10Blocks,
     candidate.ageBlocks,
+    candidate.priceSource,
+    candidate.oracleAgeSec ?? "nil",
+    candidate.dexPriceUsd?.toFixed(10) ?? "nil",
+    candidate.exitLiquidityUsd?.toFixed(4) ?? "nil",
+    candidate.oraclePriceUsd?.toFixed(10) ?? "nil",
+    candidate.saleVenue ?? "nil",
+    candidate.watch ? "watch" : "live",
   ].join("|");
   let h = 5381;
   for (let i = 0; i < inputs.length; i++) h = ((h << 5) + h + inputs.charCodeAt(i)) >>> 0;

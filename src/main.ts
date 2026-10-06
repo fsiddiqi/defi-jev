@@ -7,10 +7,25 @@ import { scanAll } from "./scan.js";
 import { checkOracleFreshness, checkOracleDivergence, fetchEthPrice } from "./oracle.js";
 import { executeLiquidation } from "./execute.js";
 import type { LiquidationCandidate, ExecutionConfig, JevDecision, ScanStats } from "./types.js";
-import { startServer, getState, addFeedEntry, updateFeedEntry } from "./server.js";
-import { gasCostUsd, projectedProfitUsd } from "./profit.js";
+import { startServer, getState, addFeedEntry, updateFeedEntry, feedKey } from "./server.js";
+import { ETH_USD_ASSUMED, gasCostUsd, projectedProfitUsd } from "./profit.js";
 import { dataIntegrityGate, preJevGates } from "./lib/gates.js";
 import { candidateContextHash } from "./lib/scanMath.js";
+import { isWatchPlayable, type WatchPlayableConfig } from "./lib/watch.js";
+
+// Feed rows are keyed by (borrower, market): a borrower holding collateral in
+// two markets must not have one row overwrite the other.
+const feedRow = (c: LiquidationCandidate) => ({
+  borrower: c.borrower,
+  collateralAsset: c.collateralAsset,
+  borrowAsset: c.borrowAsset,
+});
+
+// Same (borrower, market) key for the Jev cache and decision map. A borrower
+// who is liquidatable in one market and at-risk in another is TWO candidates —
+// keying the cache by borrower alone would let one market's decision leak into
+// the other's row.
+const candidateKey = (c: LiquidationCandidate) => feedKey(feedRow(c));
 
 // Jev gate mode: "confidence" (TypeSafe confidence) or "probability" (p(EXECUTE))
 const JEV_GATE_MODE = process.env.JEV_GATE_MODE ?? "probability";
@@ -103,6 +118,15 @@ async function main() {
   // how fast NEW liquidations are detected, indexer-bound anyway).
   const SCAN_INTERVAL_MS = Number(process.env.SCAN_INTERVAL_MS ?? "30000");
 
+  // Playable slice of the at-risk watchlist: sized for a solo bot, profit above
+  // a floor, oracle age verifiable. Classification only — never a gate.
+  const WATCH_PLAYABLE: WatchPlayableConfig = {
+    capUsd: Number(process.env.WATCH_PLAYABLE_CAP_USD ?? "250000"),
+    minProfitUsd: Number(process.env.WATCH_MIN_PROFIT_USD ?? "500"),
+    maxOracleAgeSec: Number(process.env.WATCH_ORACLE_MAX_AGE_SEC ?? "300"),
+  };
+  state.playable = { ...WATCH_PLAYABLE };
+
   // Candidates per Jev batch API call. Keep large: JEV_BATCH_SIZE amortizes
   // the fixed instruction cost across many candidates (auto-halves on
   // max_tokens_exceeded). Jev ingests large contexts cheaply per candidate.
@@ -162,18 +186,28 @@ async function main() {
           collateralAsset: candidate.collateralAsset,
           borrowAsset: candidate.borrowAsset,
           currentLtv: candidate.currentLtv,
+          healthFactor: candidate.healthFactor,
           expectedSeizeUsd: candidate.expectedSeizeUsd,
-          projectedProfitUsd: projectedProfitUsd(candidate),
+          projectedProfitUsd: projectedProfitUsd(candidate, ethPriceUsd),
           gasPriceGwei: candidate.gasPriceGwei,
+          priceSource: candidate.priceSource,
+          exitLiquidityUsd: candidate.exitLiquidityUsd,
+          dexPriceUsd: candidate.dexPriceUsd,
+          oraclePriceUsd: candidate.oraclePriceUsd,
+          saleVenue: candidate.saleVenue,
+          oracleAgeSec: candidate.oracleAgeSec,
           decision: null,
           gateResult: null,
         });
 
-        // Pre-Jev gates
-        const preJev = preJevGates(candidate, CONFIG);
+        // Pre-Jev gates — skipped for at-risk watch rows on purpose: they are
+        // not executable today (HF > 1.0) and the point of the watchlist is
+        // Jev's WARM verdict on every visible position, so the verdict is
+        // already computed when one crosses into liquidation.
+        const preJev = candidate.watch ? { pass: true as const, reason: "" } : preJevGates(candidate, CONFIG);
         if (!preJev.pass) {
           stats.jevSkip++;
-          updateFeedEntry(candidate.borrower, { gateResult: "blocked", gateReason: `pre-Jev: ${preJev.reason}` });
+          updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: `pre-Jev: ${preJev.reason}` });
           state.stats = { ...stats };
           console.log(`    Pre-Jev: ${preJev.reason}`);
           continue;
@@ -185,7 +219,7 @@ async function main() {
         const integrity = dataIntegrityGate(candidate, Number(process.env.MAX_HF_MISMATCH_PCT ?? "0.30"));
         if (!integrity.pass) {
           stats.jevSkip++;
-          updateFeedEntry(candidate.borrower, { gateResult: "blocked", gateReason: integrity.reason });
+          updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: integrity.reason });
           state.stats = { ...stats };
           console.log(`    Data-integrity gate: ${integrity.reason} - skipping ${candidate.borrower.slice(0,8)}`);
           continue;
@@ -194,10 +228,10 @@ async function main() {
         // Reuse the cached decision if it is still fresh, OR if the input
         // context is bit-identical to what was last judged (decision is a
         // deterministic function of this context — re-judging is a no-op).
-        const cached = jevCache.get(candidate.borrower);
+        const cached = jevCache.get(candidateKey(candidate));
         const ctxHash = candidateContextHash(candidate);
         if (cached && (Date.now() - cached.at < JEV_REEVAL_MS || cached.contextHash === ctxHash)) {
-          decisionOf.set(candidate.borrower, cached.decision);
+          decisionOf.set(candidateKey(candidate), cached.decision);
           cachedJevDecisions++;
         }
         eligible.push(candidate);
@@ -207,7 +241,7 @@ async function main() {
       // One API call per chunk (JEV_BATCH_SIZE); max_tokens_exceeded retries
       // with progressively smaller chunks so a single oversized batch can't
       // burn the whole cycle.
-      const fresh = eligible.filter((c) => !decisionOf.has(c.borrower));
+      const fresh = eligible.filter((c) => !decisionOf.has(candidateKey(c)));
       let apiCalls = 0;
       // Coalesce fresh evaluations: never fire a Jev call more often than
       // JEV_MIN_INTERVAL_MS. Fresh candidates accumulate across scan cycles
@@ -221,14 +255,14 @@ async function main() {
         while (evaluated < fresh.length) {
           const chunk = fresh.slice(evaluated, evaluated + batchSize);
           try {
-            const decisions = await jev.evaluateBatch(chunk);
+            const decisions = await jev.evaluateBatch(chunk, ethPriceUsd);
             consecutiveJevFailures = 0;
             const now = Date.now();
             chunk.forEach((candidate, i) => {
               const d = decisions[i];
-              decisionOf.set(candidate.borrower, d);
-              jevCache.set(candidate.borrower, { decision: d, at: now, contextHash: candidateContextHash(candidate) });
-              updateFeedEntry(candidate.borrower, {
+              decisionOf.set(candidateKey(candidate), d);
+              jevCache.set(candidateKey(candidate), { decision: d, at: now, contextHash: candidateContextHash(candidate) });
+              updateFeedEntry(feedRow(candidate), {
                 decision: { action: d.action, confidence: d.confidence, reasoningCode: d.reasoningCode, priority: d.priority, sanity: d.sanity },
               });
               console.log(`  Jev: ${d.action} (conf=${d.confidence.toFixed(2)}, code=${d.reasoningCode}, pri=${d.priority}, sanity=${d.sanity}) ${candidate.borrower.slice(0,8)} seize=$${candidate.expectedSeizeUsd.toFixed(0)}`);
@@ -251,7 +285,7 @@ async function main() {
               consecutiveJevFailures = 0;
             }
             stats.jevSkip++;
-            updateFeedEntry(chunk[0].borrower, { gateResult: "blocked", gateReason: "jev call failed" });
+            updateFeedEntry(feedRow(chunk[0]), { gateResult: "blocked", gateReason: "jev call failed" });
             evaluated++;
           }
         }
@@ -261,8 +295,36 @@ async function main() {
       }
       console.log(`  Jev: ${fresh.length} candidates in ${apiCalls} call(s), ${cachedJevDecisions} cached decisions`);
       for (const candidate of eligible) {
-        const jevDecision = decisionOf.get(candidate.borrower);
+        const jevDecision = decisionOf.get(candidateKey(candidate));
         if (!jevDecision) continue;
+
+        // Surface the verdict on the row regardless of how it got here (fresh
+        // batch or warm cache) — a re-added row must show its decision, not "…".
+        updateFeedEntry(feedRow(candidate), {
+          decision: {
+            action: jevDecision.action,
+            confidence: jevDecision.confidence,
+            reasoningCode: jevDecision.reasoningCode,
+            priority: jevDecision.priority,
+            sanity: jevDecision.sanity,
+          },
+        });
+
+        // At-risk watch row: never executes today. Record the warm verdict —
+        // the instant HF dips below 1.0 the position re-scans as a live
+        // candidate, its context hash changes, and Jev re-judges it under the
+        // real gates. Until then this row is a monitored queue, not a trade.
+        if (candidate.watch) {
+          updateFeedEntry(feedRow(candidate), {
+            gateResult: "watch",
+            gateReason: `HF ${candidate.healthFactor.toFixed(4)} (not liquidatable) · Jev warm: ${jevDecision.action}`,
+            playable: isWatchPlayable(candidate, WATCH_PLAYABLE, ethPriceUsd),
+          });
+          if (jevDecision.action === "EXECUTE") {
+            console.log(`    [watch] ${candidate.borrower.slice(0,8)} ${candidate.collateralAsset} HF=${candidate.healthFactor.toFixed(4)} — Jev: EXECUTE-worthy if liquidatable (profit=$${projectedProfitUsd(candidate, ethPriceUsd).toFixed(2)})`);
+          }
+          continue;
+        }
 
         // Count Jev actions
         if (jevDecision.action === "EXECUTE") stats.jevExecute++;
@@ -271,22 +333,22 @@ async function main() {
         state.stats = { ...stats };
 
         // Post-Jev gates
-        const gateFail = postJevGates(jevDecision, candidate, CONFIG);
+        const gateFail = postJevGates(jevDecision, candidate, CONFIG, ethPriceUsd);
         if (gateFail) {
-          updateFeedEntry(candidate.borrower, { gateResult: "blocked", gateReason: gateFail });
+          updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: gateFail });
           if (jevDecision.action === "EXECUTE") {
             console.log(`    Post-Jev gate failed (${gateFail}) - skipping ${candidate.borrower.slice(0,8)}`);
           }
           continue;
         }
-        updateFeedEntry(candidate.borrower, { gateResult: "passed" });
+        updateFeedEntry(feedRow(candidate), { gateResult: "passed" });
 
         // Execute or log
         if (jevDecision.action === "EXECUTE") {
           if (PAPER_MODE) {
-            console.log(`    [PAPER] Would execute: ${candidate.protocol} ${candidate.borrower.slice(0,8)} seize=$${candidate.expectedSeizeUsd.toFixed(2)} profit=$${projectedProfitUsd(candidate).toFixed(2)}`);
+            console.log(`    [PAPER] Would execute: ${candidate.protocol} ${candidate.borrower.slice(0,8)} seize=$${candidate.expectedSeizeUsd.toFixed(2)} profit=$${projectedProfitUsd(candidate, ethPriceUsd).toFixed(2)}`);
             stats.executed++;
-            updateFeedEntry(candidate.borrower, { executed: true });
+            updateFeedEntry(feedRow(candidate), { executed: true });
           } else if (!wallet) {
             console.log(`    ❌ No wallet configured - cannot execute`);
             stats.failed++;
@@ -349,7 +411,7 @@ async function main() {
 // JEV_GATE_MODE=confidence|probability selects how EXECUTE is gated.
 //   confidence: TypeSafe confidence >= MIN_JEV_CONFIDENCE (default 0.55)
 //   probability: p(EXECUTE) >= MIN_JEV_EXECUTE_PROB (default 0.40)
-function postJevGates(decision: JevDecision, candidate: LiquidationCandidate, config: ExecutionConfig): string | null {
+function postJevGates(decision: JevDecision, candidate: LiquidationCandidate, config: ExecutionConfig, ethPriceUsd: number = ETH_USD_ASSUMED): string | null {
   // Action first: a SKIP/QUEUE is blocked regardless of confidence/probability.
   if (decision.action !== "EXECUTE") return `jev action ${decision.action}`;
 
@@ -374,8 +436,8 @@ function postJevGates(decision: JevDecision, candidate: LiquidationCandidate, co
   }
 
   // Profit forecast check
-  const gasCostEst = gasCostUsd(candidate);
-  const netProfitEst = projectedProfitUsd(candidate);
+  const gasCostEst = gasCostUsd(candidate, ethPriceUsd);
+  const netProfitEst = projectedProfitUsd(candidate, ethPriceUsd);
   if (netProfitEst < config.minProfitForecastUsd) {
     return `net profit $${netProfitEst.toFixed(2)} < $${config.minProfitForecastUsd}`;
   }

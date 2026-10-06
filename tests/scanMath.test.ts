@@ -30,6 +30,13 @@ function cand(over: Partial<LiquidationCandidate>): LiquidationCandidate {
     cascadeScore: 0,
     competitionLast10Blocks: 0,
     ageBlocks: 999,
+    oraclePriceUsd: 1.0000492,
+    oracleAgeSec: 30,
+    dexPriceUsd: null,
+    exitLiquidityUsd: null,
+    priceSource: "none",
+    saleVenue: null,
+    watch: false,
     ...over,
   };
 }
@@ -46,6 +53,16 @@ describe("candidateContextHash - skip re-judging unchanged candidates", () => {
     expect(candidateContextHash(cand({ currentLtv: 24.8 }))).not.toBe(base);
     expect(candidateContextHash(cand({ competitionLast10Blocks: 3 }))).not.toBe(base);
     expect(candidateContextHash(cand({ collateralTier: "long-tail" }))).not.toBe(base);
+    expect(candidateContextHash(cand({ priceSource: "dex" }))).not.toBe(base);
+    expect(candidateContextHash(cand({ dexPriceUsd: 0.98, exitLiquidityUsd: 500_000, priceSource: "dex" }))).not.toBe(base);
+    expect(candidateContextHash(cand({ oracleAgeSec: 120 }))).not.toBe(base);
+  });
+  it("re-judges when a watched position crosses into liquidation", () => {
+    const watch = candidateContextHash(cand({ watch: true, healthFactor: 1.02 }));
+    const live = candidateContextHash(cand({ watch: false, healthFactor: 1.02 }));
+    expect(watch).not.toBe(live);
+    // and the HF move alone (1.02 -> 0.997) also re-judges, double safety
+    expect(candidateContextHash(cand({ watch: true, healthFactor: 0.997 }))).not.toBe(watch);
   });
   it("distinguishes different borrowers (the model sees the address)", () => {
     const other = cand({ borrower: "0x1111111111111111111111111111111111111111" });

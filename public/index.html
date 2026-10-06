@@ -47,6 +47,8 @@
   .badge.execute, .badge.passed { background: #dafbe1; color: var(--green); }
   .badge.queue, .badge.pending { background: #fff8c5; color: var(--yellow); }
   .badge.skip, .badge.blocked { background: #ffebe9; color: var(--red); }
+  .badge.dex { background: #ddf4ff; color: var(--blue); }
+  .badge.watch { background: #ddf4ff; color: var(--blue); border: 1px solid #b6e3ff; }
 
   .conf { color: var(--muted); font-size: 12px; }
   .empty { text-align: center; color: var(--muted); padding: 32px !important; }
@@ -99,7 +101,9 @@
   <h2>Candidate feed</h2>
   <div class="filter" id="filter">
     <button class="filt" data-f="all">All</button>
-    <button class="filt active" data-f="pass">Pass</button>
+    <button class="filt active" data-f="play">Play</button>
+    <button class="filt" data-f="watch">Watch</button>
+    <button class="filt" data-f="pass">Pass</button>
     <button class="filt" data-f="blocked">Blocked</button>
   </div>
 </div>
@@ -111,14 +115,17 @@
       <th class="sortable" data-key="borrower">Borrower</th>
       <th class="sortable" data-key="seize">Seize</th>
       <th class="sortable" data-key="profit">Profit</th>
+      <th class="sortable" data-key="hf">HF</th>
       <th class="sortable" data-key="ltv">LTV</th>
+      <th class="sortable" data-key="price">Price</th>
+      <th class="sortable" data-key="exit">Exit $</th>
       <th class="sortable" data-key="decision">Decision</th>
       <th class="sortable desc" data-key="conf">Conf</th>
       <th class="sortable" data-key="status">Status</th>
     </tr>
   </thead>
   <tbody id="feed">
-    <tr><td colspan="9" class="empty">Waiting for data…</td></tr>
+    <tr><td colspan="12" class="empty">Waiting for data…</td></tr>
   </tbody>
 </table>
 
@@ -140,12 +147,17 @@ let sortKey = "conf";          // default: highest confidence first
 let sortDir = "desc";
 let lastFeed = [];
 
-// ── Filter (blocked rows hidden by default) ──────────────────────────────
-let filterMode = "pass";       // "all" | "pass" | "blocked"
+// ── Filter ────────────────────────────────────────────────────────────────
+// Default view is "Play": at-risk rows a solo bot could actually act on IF they
+// cross (server-side playable flag: sized, profitable, verifiable oracle).
+// Watch = the full at-risk queue. Pass = actually-cleared gates (executable).
+let filterMode = "play";        // "all" | "play" | "watch" | "pass" | "blocked"
 const passesFilter = e =>
   filterMode === "all" ? true :
+  filterMode === "play" ? e.playable === true :
+  filterMode === "watch" ? e.gateResult === "watch" :
   filterMode === "blocked" ? e.gateResult === "blocked" :
-  e.gateResult !== "blocked";  // "pass" = passed + pending
+  e.gateResult === "passed";    // "pass" = only rows that cleared every gate
 
 document.querySelectorAll(".filt").forEach(btn => {
   btn.addEventListener("click", () => {
@@ -156,7 +168,8 @@ document.querySelectorAll(".filt").forEach(btn => {
 });
 
 const ACTION_ORDER = { EXECUTE: 0, QUEUE: 1, SKIP: 2 };
-const GATE_ORDER = { passed: 0, blocked: 1, pending: 2 };
+const GATE_ORDER = { passed: 0, watch: 1, blocked: 2, pending: 3 };
+const PRICE_ORDER = { oracle: 0, dex: 1, none: 2 };
 
 function sortValue(e, key) {
   const d = e.decision;
@@ -166,7 +179,10 @@ function sortValue(e, key) {
     case "borrower": return e.borrower.toLowerCase();
     case "seize":    return e.expectedSeizeUsd;
     case "profit":   return e.projectedProfitUsd ?? 0;
+    case "hf":       return e.healthFactor ?? -1;
     case "ltv":      return e.currentLtv;
+    case "exit":     return e.exitLiquidityUsd ?? -1;
+    case "price":    return PRICE_ORDER[e.priceSource] ?? 9;
     case "decision": return ACTION_ORDER[d?.action] ?? 9;
     case "conf":     return d?.confidence ?? -1;
     case "status":   return GATE_ORDER[e.gateResult] ?? 9;
@@ -195,7 +211,7 @@ document.querySelectorAll("th.sortable").forEach(th => {
     } else {
       sortKey = key;
       // numeric/text default ascending; conf & time default descending
-      sortDir = ["conf", "time", "seize", "profit", "ltv"].includes(key) ? "desc" : "asc";
+      sortDir = ["conf", "time", "seize", "profit", "hf", "ltv", "exit"].includes(key) ? "desc" : "asc";
     }
     document.querySelectorAll("th.sortable").forEach(x =>
       x.classList.remove("asc", "desc"));
@@ -208,22 +224,36 @@ function renderFeed() {
   const tbody = document.getElementById("feed");
 
   // per-filter counts on the toggle buttons
-  const counts = { all: lastFeed.length, pass: 0, blocked: 0 };
-  lastFeed.forEach(e => e.gateResult === "blocked" ? counts.blocked++ : counts.pass++);
+  const counts = { all: lastFeed.length, play: 0, watch: 0, pass: 0, blocked: 0 };
+  lastFeed.forEach(e => {
+    if (e.gateResult === "blocked") counts.blocked++;
+    else if (e.gateResult === "watch") { counts.watch++; if (e.playable) counts.play++; }
+    else if (e.gateResult === "passed") counts.pass++;
+  });
   document.querySelectorAll(".filt").forEach(b =>
-    b.textContent = { all: "All", pass: "Pass", blocked: "Blocked" }[b.dataset.f] + ` (${counts[b.dataset.f]})`);
+    b.textContent = { all: "All", play: "Play", watch: "Watch", pass: "Pass", blocked: "Blocked" }[b.dataset.f] + ` (${counts[b.dataset.f]})`);
 
   const feed = sortedFeed();
   if (feed.length === 0) {
     const msg = lastFeed.length === 0 ? "Waiting for candidates…" : "No rows match this filter.";
-    tbody.innerHTML = `<tr><td colspan="9" class="empty">${msg}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="empty">${msg}</td></tr>`;
     return;
   }
+  const priceBadge = e => {
+    switch (e.priceSource) {
+      case "dex":
+        return `<span class="badge dex" title="Real on-chain pool: ${e.saleVenue ?? ""} · one-sided depth ${usd(e.exitLiquidityUsd)}">dex</span>`;
+      case "none":
+        return `<span class="badge blocked" title="No verifiable exit venue — projected profit is $0">none</span>`;
+      default:
+        return `<span class="badge queue" title="Oracle price = exit price (deep real market)">oracle</span>`;
+    }
+  };
   tbody.innerHTML = feed.map(e => {
     const d = e.decision;
     const action = d ? d.action : "pending";
     const gate = e.gateResult ?? "pending";
-    const gateLabel = gate === "passed" ? "passed" : gate === "blocked" ? "blocked" : "…";
+    const gateLabel = gate === "passed" ? "passed" : gate === "blocked" ? "blocked" : gate === "watch" ? "watch" : "…";
     const exec = e.executed ? ' <span class="badge execute">paper</span>' : "";
     const sanityWarn = d && d.sanity && d.sanity !== "plausible"
       ? ` <span class="neg" title="Jev sanity verdict: ${d.sanity}">⚠ ${d.sanity.replaceAll("_", " ")}</span>`
@@ -234,10 +264,13 @@ function renderFeed() {
       <td class="mono" title="${e.borrower}">${short(e.borrower)}</td>
       <td>${usd(e.expectedSeizeUsd)}</td>
       <td class="${(e.projectedProfitUsd ?? 0) >= 0 ? "" : "neg"}">${usd(e.projectedProfitUsd)}</td>
-      <td class="muted">${(e.currentLtv * 100).toFixed(1)}%</td>
+      <td class="muted" title="Health factor (indexer; &lt;1 = liquidatable)">${e.healthFactor != null ? e.healthFactor.toFixed(3) : "—"}</td>
+      <td class="muted" title="LTV = USD borrowed per $1 of collateral (≥100% = underwater)">${(e.currentLtv * 100).toFixed(0)}%</td>
+      <td>${priceBadge(e)}</td>
+      <td class="muted" title="${e.saleVenue ?? ""}">${e.exitLiquidityUsd ? usd(e.exitLiquidityUsd) : "—"}</td>
       <td><span class="badge ${cls(action)}">${action}</span> <span class="muted">${d ? d.reasoningCode.replaceAll("_", " ") : ""}</span>${sanityWarn}</td>
       <td class="conf">${d ? d.confidence.toFixed(2) : "—"}</td>
-      <td><span class="badge ${gate}" title="${e.gateReason ?? ""}">${gateLabel}</span>${exec}</td>
+      <td><span class="badge ${gate}" title="${e.gateReason ?? ""}">${gateLabel}</span>${e.playable ? ' <span class="badge execute" title="At-risk row a solo bot could fund & exit IF it crosses (seize ≤ cap, warm profit ≥ floor); price re-read on-chain each scan, verified-stale oracles excluded">play</span>' : ""}${exec}</td>
     </tr>`;
   }).join("");
 }
