@@ -2,15 +2,22 @@
 
 export type Protocol = "morpho-blue" | "ionic";
 
-export type AssetTier = "stable" | "bluechip" | "lrt" | "long-tail";
+export type AssetTier =
+  | "stable"
+  | "bluechip"
+  | "lrt"
+  | "listed" // known sales venue (DEX pool / native redemption) but thin — USR, wbCOIN
+  | "long-tail"; // no verifiable market — RSS, RLP, REIT, PT-* wrappers
 
 export interface LiquidationCandidate {
   protocol: Protocol;
   borrower: `0x${string}`;
   collateralAsset: string;
+  collateralTier: AssetTier;
   borrowAsset: string;
   currentLtv: number;
   liquidationThreshold: number;
+  healthFactor: number;
   collateralBalanceUsd: number;
   borrowBalanceUsd: number;
   seizePct: number;
@@ -36,13 +43,25 @@ export type ReasoningCode =
   | "borrower_too_young"
   | "ltv_spread_too_tight"
   | "margin_buffer_insufficient"
-  | "max_concurrent_reached";
+  | "max_concurrent_reached"
+  | "data_inconsistent";
+
+// Jev's plausibility verdict on the candidate's projected economics
+export type SanityCode =
+  | "plausible"
+  | "seize_exceeds_collateral"
+  | "ltv_hf_inconsistent"
+  | "collateral_dust_mismatch"
+  | "oracle_price_distortion";
 
 export interface JevDecision {
   action: JevAction;
-  confidence: number;        // 0.0 - 1.0
+  confidence: number;           // TypeSafe confidence (0-1)
+  actionProbabilities: Record<JevAction, number>; // full posterior
   reasoningCode: ReasoningCode;
-  priority: number;          // 1 - 10
+  priority: number;             // 1 - 10
+  sanity: SanityCode;
+  sanityConfidence: number;     // 0 - 1
 }
 
 export interface ExecutionConfig {

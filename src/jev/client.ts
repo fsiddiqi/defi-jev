@@ -1,222 +1,374 @@
-import { z } from "zod";
-import type { LiquidationCandidate, JevDecision, JevAction, ReasoningCode } from "../types.js";
+import type { LiquidationCandidate, JevDecision, JevAction, ReasoningCode, SanityCode } from "../types.js";
+import { gasCostUsd, projectedProfitUsd } from "../profit.js";
 
-// ── Zod schema for Jev output ────────────────────────────────────────────────
+// ── TypeSafe/Jev API types ────────────────────────────────────────────────────
 
-const JevActionSchema = z.enum(["EXECUTE", "QUEUE", "SKIP"]);
-
-const ReasoningCodeSchema = z.enum([
-  "high_ltv_low_competition_cascade_tail",
-  "low_edge_gas_risk",
-  "stale_oracle_skip",
-  "cascade_saturation",
-  "insufficient_seize_value",
-  "oracle_stale",
-  "borrower_too_young",
-  "ltv_spread_too_tight",
-  "margin_buffer_insufficient",
-  "max_concurrent_reached",
-]);
-
-const JevDecisionSchema = z.object({
-  action: JevActionSchema,
-  confidence: z.number().min(0).max(1),
-  reasoningCode: ReasoningCodeSchema,
-  priority: z.number().int().min(1).max(10),
-});
-
-export type JevDecisionParsed = z.infer<typeof JevDecisionSchema>;
-
-// ── OpenRouter client ────────────────────────────────────────────────────────
-
-interface OpenRouterMessage {
-  role: "system" | "user";
-  content: string;
+interface TypeSafeQuestion {
+  type: "choice" | "score" | "noul";
+  instructions: string | object | unknown[];
+  criteria: Record<string, string | object | unknown[] | null> | Array<string | object | unknown[]>;
 }
 
-interface OpenRouterRequest {
+interface TypeSafeRequest {
+  state: string | object | unknown[];
   model: string;
-  messages: OpenRouterMessage[];
-  temperature: number;
-  max_tokens: number;
-  response_format?: { type: "json_object" };
+  questions: Record<string, TypeSafeQuestion>;
 }
 
-interface OpenRouterResponse {
-  choices: Array<{
-    message: { content: string };
-    finish_reason: string;
-  }>;
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+interface TypeSafeChoiceAnswer {
+  type: "choice";
+  choice: string;
+  confidence: number;
+  probabilities: Record<string, number>;
 }
+
+interface TypeSafeScoreAnswer {
+  type: "score";
+  score: number;
+  confidence: number;
+  legend: Record<string, string>;
+  probabilities: Record<string, number>;
+}
+
+interface TypeSafeNoulAnswer {
+  type: "noul";
+  noul: number;
+}
+
+type TypeSafeAnswer = TypeSafeChoiceAnswer | TypeSafeScoreAnswer | TypeSafeNoulAnswer;
+
+interface TypeSafeResponse {
+  model: string;
+  answers: Record<string, TypeSafeAnswer>;
+  usage: { input_tokens: number; output_tokens: number };
+}
+
+// ── Jev Client ────────────────────────────────────────────────────────────────
 
 export interface JevClientConfig {
   apiKey: string;
   model: string;
-  temperature: number;
-  maxTokens: number;
   baseUrl: string;
 }
 
 export interface JevCallResult {
-  decision: JevDecisionParsed;
+  decision: JevDecision;
   tokensIn: number;
   tokensOut: number;
   latencyMs: number;
   costUsd: number;
 }
 
-const SYSTEM_PROMPT = `You are a liquidation racing judge for Base (Morpho Blue + Ionic).
-You receive ONE abandoned liquidation candidate at a time (200+ blocks since liquidatable).
-Your job: judge if the flash-loan execution is worth the gas and risk.
-
-CONTEXT:
-- Execution is ATOMIC: flash loan → liquidate → seize → unwrap/swap → repay in ONE transaction.
-- No position holding, no inventory risk. Profit = seize value - gas - slippage.
-- Flash loan provider: Balancer Vault. Swap: Uniswap V3.
-- Slippage assumption: 50 bps. Gas base: $0.50 + scaling.
-- Risk premiums by tier: stable $0.50, bluechip $1.00, LRT $3.00, long-tail $5.00.
-- Protocol margin modifiers: ionic 1.0x, morpho-blue 1.2x.
-
-OUTPUT: JSON only. Schema:
-{
-  "action": "EXECUTE" | "QUEUE" | "SKIP",
-  "confidence": 0.0-1.0,
-  "reasoning_code": "high_ltv_low_competition_cascade_tail" | "low_edge_gas_risk" | "stale_oracle_skip" | "cascade_saturation" | "insufficient_seize_value" | "oracle_stale" | "borrower_too_young" | "ltv_spread_too_tight" | "margin_buffer_insufficient" | "max_concurrent_reached",
-  "priority": 1-10
+// State structure sent to Jev - all candidates in one batched call
+function buildBatchState(candidates: LiquidationCandidate[]): object {
+  const maxHfMismatchPct = Number(process.env.MAX_HF_MISMATCH_PCT ?? "0.30");
+  return {
+    candidates: candidates.map((c, i) => {
+      const coll = c.collateralBalanceUsd;
+      const borrow = c.borrowBalanceUsd;
+      const impliedLtv = coll > 0 ? borrow / coll : null;
+      const hfFromUsd = impliedLtv && impliedLtv > 0 ? c.liquidationThreshold / impliedLtv : null;
+      const hf = c.healthFactor;
+      const hfMismatchPct = hfFromUsd !== null && hf > 0
+        ? Math.abs(hfFromUsd - hf) / hf
+        : null;
+      // The signals CONTRADICT each other only when they disagree on whether
+      // the position is liquidatable (one side healthy, the other underwater).
+      // Pure magnitude gaps (e.g. both < 1) are indexer/oracle-pricing
+      // artifacts and must NOT be treated as inconsistent.
+      const hfDirectionAgrees = hfFromUsd !== null && hf > 0
+        ? (hfFromUsd > 1) === (hf > 1)
+        : true;
+      if (process.env.JEV_DEBUG === "1") {
+        console.log(`  [jev-debug] ${c.borrower.slice(0,8)} hf=${hf?.toFixed(4)} hfFromUsd=${hfFromUsd?.toFixed(4)} mismatch=${(hfMismatchPct !== null ? hfMismatchPct * 100 : NaN).toFixed(1)}% dirAgree=${hfDirectionAgrees} lltv=${c.liquidationThreshold} coll=$${coll.toFixed(0)} borrow=$${borrow.toFixed(0)}`);
+      }
+      return {
+        idx: i,
+        protocol: c.protocol,
+        borrower: c.borrower,
+        collateralAsset: c.collateralAsset,
+        collateralTier: c.collateralTier,
+        borrowAsset: c.borrowAsset,
+        currentLtv: c.currentLtv,
+        liquidationThreshold: c.liquidationThreshold,
+        ltvPastThresholdPct: (c.currentLtv - c.liquidationThreshold) * 100,
+        reportedHealthFactor: hf,
+        collateralUsd: coll,
+        borrowUsd: borrow,
+        seizePct: c.seizePct * 100,
+        expectedSeizeUsd: c.expectedSeizeUsd,
+        gasCostUsd: gasCostUsd(c),
+        projectedProfitUsd: projectedProfitUsd(c),
+        profitToSeizeRatio: c.expectedSeizeUsd > 0 ? projectedProfitUsd(c) / c.expectedSeizeUsd : null,
+        oracleFreshnessSec: c.oracleFreshnessSec,
+        gasPriceGwei: c.gasPriceGwei,
+        estExecutionGas: c.estimatedExecutionGas,
+        priceMove30mPct: c.recentPriceMovePct30m,
+        cascadeScore: c.cascadeScore,
+        competitionLast10Blocks: c.competitionLast10Blocks,
+        ageBlocks: c.ageBlocks,
+        sanity: {
+          seizeToCollateralRatio: coll > 0 ? c.expectedSeizeUsd / coll : null,
+          seizeExceedsCollateral: c.expectedSeizeUsd > coll,
+          isDustCollateral: coll < 1 && borrow > 1,
+          // NOTE: hfFromUsdBalances / hfMismatchPct / hfDirectionAgrees used to
+          // live here but were removed — the classifier misread the HF pair and
+          // flagged every row ltv_hf_inconsistent regardless of values. HF
+          // consistency is now enforced deterministically in main.ts
+          // (dataIntegrityGate) before candidates ever reach Jev.
+        },
+      };
+    }),
+    thresholds: {
+      minSeizeUsd: Number(MIN_SEIZE_USD),
+      minProfitUsd: Number(MIN_PROFIT_FORECAST_USD),
+      maxGasPctOfProfit: MAX_GAS_PCT_OF_PROFIT,
+      maxHfMismatchPct,
+    },
+  };
 }
 
-REASONING CODE MEANINGS:
-- high_ltv_low_competition_cascade_tail: LTV > 0.92, few competitors, cascade score > 0.5
-- low_edge_gas_risk: expected profit < 2x gas, or gas > 100 gwei
-- stale_oracle_skip: oracle freshness > 30s (morpho) or > 300s (ionic)
-- cascade_saturation: 3+ liquidations in last 5 blocks, cascade score > 0.7
-- insufficient_seize_value: expected seize < $500
-- oracle_stale: oracle update failed or > threshold
-- borrower_too_young: account age < 3 days (likely test/bot)
-- ltv_spread_too_tight: current LTV within 2% of threshold
-- margin_buffer_insufficient: available margin < $1,000
-- max_concurrent_reached: 5 concurrent positions already open
-
-DECISION LOGIC:
-- EXECUTE: high confidence (>0.7), clear edge, all gates pass
-- QUEUE: moderate confidence (0.55-0.7), or one soft gate marginal
-- SKIP: low confidence (<0.55), any hard gate fails, or forecast profit < $200
-
-Be conservative. False positives cost gas. False negatives cost opportunity — but opportunity is infinite.`;
-
-function buildUserPrompt(candidate: LiquidationCandidate): string {
-  return `CANDIDATE:
-protocol: ${candidate.protocol}
-borrower: ${candidate.borrower}
-collateral: ${candidate.collateralAsset}
-borrow: ${candidate.borrowAsset}
-current_ltv: ${candidate.currentLtv.toFixed(4)}
-liquidation_threshold: ${candidate.liquidationThreshold.toFixed(4)}
-ltv_gap_pct: ${((candidate.liquidationThreshold - candidate.currentLtv) * 100).toFixed(2)}%
-collateral_usd: ${candidate.collateralBalanceUsd.toFixed(2)}
-borrow_usd: ${candidate.borrowBalanceUsd.toFixed(2)}
-seize_pct: ${(candidate.seizePct * 100).toFixed(2)}%
-expected_seize_usd: ${candidate.expectedSeizeUsd.toFixed(2)}
-oracle_freshness_sec: ${candidate.oracleFreshnessSec.toFixed(1)}
-gas_price_gwei: ${candidate.gasPriceGwei}
-est_execution_gas: ${candidate.estimatedExecutionGas.toLocaleString()}
-price_move_30m_pct: ${candidate.recentPriceMovePct30m.toFixed(2)}
-cascade_score: ${candidate.cascadeScore.toFixed(2)}
-competition_10_blocks: ${candidate.competitionLast10Blocks}
-age_blocks: ${candidate.ageBlocks}
-
-OUTPUT JSON ONLY.`;
+// Build per-candidate Choice question config
+function makeCandidateQuestions(candidates: LiquidationCandidate[]): Record<string, TypeSafeQuestion> {
+  const questions: Record<string, TypeSafeQuestion> = {};
+  candidates.forEach((_, i) => {
+    questions[`action_${i}`] = {
+      type: "choice",
+      instructions: ACTION_INSTRUCTIONS,
+      criteria: ACTION_CRITERIA,
+    };
+    questions[`reasoning_${i}`] = {
+      type: "choice",
+      instructions: "What is the single primary reason for this decision? Pick the code that best matches the decisive factor from the checklist.",
+      criteria: REASONING_CRITERIA,
+    };
+    questions[`priority_${i}`] = {
+      type: "score",
+      instructions: "Priority for execution if it were approved (1=lowest, 10=highest). Driven first by projectedProfitUsd, then by ltvPastThresholdPct, low competition, and liquid/known collateral. Low priority also when upside is marginal.",
+      criteria: PRIORITY_CRITERIA,
+    };
+    questions[`sanity_${i}`] = {
+      type: "choice",
+      instructions: SANITY_INSTRUCTIONS,
+      criteria: SANITY_CRITERIA,
+    };
+  });
+  return questions;
 }
+
+const MIN_SEIZE_USD = process.env.MIN_SEIZE_USD ?? "500";
+const MIN_PROFIT_FORECAST_USD = process.env.MIN_PROFIT_FORECAST_USD ?? "200";
+const MARGIN_BUFFER_USD = process.env.MARGIN_BUFFER_USD ?? "2000";
+const MAX_GAS_PCT_OF_PROFIT = Number(process.env.GAS_COST_PCT_OF_PROFIT_MAX ?? "0.40");
+
+// ── Instructions ─────────────────────────────────────────────────────────────
+// Tight, checklist-style: Jev is a fast structured classifier, not a reasoner
+// that should invent its own standards. Every rule below maps to a field that
+// is actually present in the state.
+
+const ACTION_INSTRUCTIONS = [
+  "Decide the fate of this candidate. Hard checks - ALL must pass for EXECUTE/QUEUE:",
+  "1. DATA: HF was pre-verified upstream (consistent). SKIP if sanity.seizeExceedsCollateral or sanity.isDustCollateral (code data_inconsistent).",
+  "2. PROFIT: projectedProfitUsd >= thresholds.minProfitUsd and gasCostUsd <= thresholds.maxGasPctOfProfit x projectedProfitUsd.",
+  "3. SIZE: expectedSeizeUsd >= thresholds.minSeizeUsd.",
+  "4. REALIZABILITY: seized collateral must be sellable for profit to be real. collateralTier: stable/bluechip/lrt saleable (EXECUTE-eligible); listed (USR, wbCOIN) = known venue, thin-but-real -> default QUEUE unless size is small enough to clear; long-tail (RSS, RLP, REIT, PT-*) = no verifiable market -> SKIP.",
+  "5. FRESHNESS: oracleFreshnessSec fresh (morpho ~30s, ionic ~300s); priceMove30mPct large -> SKIP.",
+  "EXECUTE only if ALL pass, numbers unambiguous, confidence high (~0.7+). QUEUE if all pass but one soft signal is marginal. Otherwise SKIP (including under uncertainty).",
+].join("\n");
+
+const ACTION_CRITERIA: Record<JevAction, string> = {
+  EXECUTE: "All 5 hard checks pass, numbers unambiguous, confident (~0.7+).",
+  QUEUE: "All 5 hard checks pass but one soft signal marginal (competition/oracle age/liquidity).",
+  SKIP: "Any hard check fails, evidence ambiguous, or uncertain - dust, unsellable tail collateral, low profit, high gas, stale oracle.",
+};
+
+const REASONING_CRITERIA: Record<ReasoningCode, string> = {
+  high_ltv_low_competition_cascade_tail: "Deeply past LTV threshold and little competition - attractive tail",
+  low_edge_gas_risk: `Gas close to or above thresholds.maxGasPctOfProfit x profit, or very high gas price`,
+  stale_oracle_skip: "Oracle freshness exceeds protocol tolerance (~30s morpho, ~300s ionic)",
+  cascade_saturation: "competitionLast10Blocks >= 3 - market already contested",
+  insufficient_seize_value: `expectedSeizeUsd below $${MIN_SEIZE_USD}`,
+  oracle_stale: "Oracle stale or update failed",
+  borrower_too_young: "Account too new (likely test or bot)",
+  ltv_spread_too_tight: "Within ~2 points of the liquidation line - may recover",
+  margin_buffer_insufficient: `Projected margin below $${MARGIN_BUFFER_USD} after gas and slippage`,
+  max_concurrent_reached: "5 concurrent positions already open",
+  data_inconsistent: "isDustCollateral or seizeExceedsCollateral - figures contradict (HF pre-verified upstream)",
+};
+
+const PRIORITY_CRITERIA = [
+  "Very low priority - barely viable",
+  "Low priority",
+  "Below average priority",
+  "Average priority",
+  "Moderate priority",
+  "Above average priority",
+  "High priority",
+  "Very high priority",
+  "Critical priority",
+  "Maximum priority - execute immediately",
+];
+
+const SANITY_CRITERIA: Record<SanityCode, string> = {
+  plausible: "All sanity rules pass and figures are sane (profit <= seize, sensible profitToSeizeRatio)",
+  seize_exceeds_collateral: "expectedSeizeUsd > collateralUsd - a liquidation can never seize more than is posted",
+  ltv_hf_inconsistent: "Pre-verified upstream deterministically; do NOT select. Implausible collateral USD -> oracle_price_distortion instead.",
+  collateral_dust_mismatch: "Near-zero collateral with material borrow (isDustCollateral) - pricing/decimals error",
+  oracle_price_distortion: "Collateral USD implausible (stale/manipulated oracle or wrong decimals) - seized profit cannot be believed",
+};
+
+const SANITY_INSTRUCTIONS = [
+  "Check whether the projected economics are internally consistent and physically possible on-chain:",
+  "1. sanity.seizeExceedsCollateral true -> seize_exceeds_collateral.",
+  "2. HF was pre-verified deterministically upstream; do NOT use ltv_hf_inconsistent. Oracle-priced exotic collateral whose USD value looks implausible -> oracle_price_distortion.",
+  "3. sanity.isDustCollateral true -> collateral_dust_mismatch.",
+  "4. plausible only if all above pass and figures hang together (profitToSeizeRatio sane, profit <= seize).",
+  "When torn, choose the failure code: wrong-block costs nothing, wrong-go costs real money.",
+].join("\n");
+
+const QUESTIONS: Record<string, TypeSafeQuestion> = {
+  action: {
+    type: "choice",
+    instructions: ACTION_INSTRUCTIONS,
+    criteria: ACTION_CRITERIA,
+  },
+  reasoningCode: {
+    type: "choice",
+    instructions: "What is the single primary reason for this decision? Pick the code that best matches the decisive factor from the checklist.",
+    criteria: REASONING_CRITERIA,
+  },
+  priority: {
+    type: "score",
+    instructions: "Priority for execution if it were approved (1=lowest, 10=highest). Driven first by projectedProfitUsd, then by ltvPastThresholdPct, low competition, and liquid/known collateral. Low priority also when upside is marginal.",
+    criteria: PRIORITY_CRITERIA,
+  },
+  sanity: {
+    type: "choice",
+    instructions: SANITY_INSTRUCTIONS,
+    criteria: SANITY_CRITERIA,
+  },
+};
 
 export class JevClient {
   private config: JevClientConfig;
   private totalCostUsd = 0;
   private totalCalls = 0;
+  private totalTokensIn = 0;
+  private totalTokensOut = 0;
 
   constructor(config: JevClientConfig) {
     this.config = config;
   }
 
-  async evaluate(candidate: LiquidationCandidate): Promise<JevCallResult> {
+  // Evaluate a batch of candidates in a single API call
+  async evaluateBatch(candidates: LiquidationCandidate[]): Promise<JevDecision[]> {
+    if (candidates.length === 0) return [];
+
     const start = Date.now();
 
-    const request: OpenRouterRequest = {
+    const request: TypeSafeRequest = {
+      state: buildBatchState(candidates),
       model: this.config.model,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: buildUserPrompt(candidate) },
-      ],
-      temperature: this.config.temperature,
-      max_tokens: this.config.maxTokens,
-      response_format: { type: "json_object" },
+      questions: makeCandidateQuestions(candidates),
     };
 
-    const res = await fetch(`${this.config.baseUrl}/chat/completions`, {
+    const res = await fetch(`${this.config.baseUrl}/v1/systemone`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${this.config.apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/fsiddiqi/defi-jev",
-        "X-Title": "defi-jev liquidation racing",
       },
       body: JSON.stringify(request),
     });
 
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`OpenRouter ${res.status}: ${err}`);
+      throw new Error(`TypeSafe API ${res.status}: ${err}`);
     }
 
-    const data = await res.json() as OpenRouterResponse;
+    const data = await res.json() as TypeSafeResponse;
     const latencyMs = Date.now() - start;
 
-    const content = data.choices[0]?.message?.content;
-    if (!content) throw new Error("Empty response from Jev");
+    // Parse all candidate decisions
+    const decisions: JevDecision[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const actionAnswer = data.answers[`action_${i}`] as TypeSafeChoiceAnswer;
+      const reasoningAnswer = data.answers[`reasoning_${i}`] as TypeSafeChoiceAnswer;
+      const priorityAnswer = data.answers[`priority_${i}`] as TypeSafeScoreAnswer;
+      const sanityAnswer = data.answers[`sanity_${i}`] as TypeSafeChoiceAnswer;
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      throw new Error(`Jev returned invalid JSON: ${content.slice(0, 200)}`);
+      if (!actionAnswer || actionAnswer.type !== "choice") {
+        throw new Error(`Missing or invalid action answer for candidate ${i}`);
+      }
+      if (!reasoningAnswer || reasoningAnswer.type !== "choice") {
+        throw new Error(`Missing or invalid reasoningCode answer for candidate ${i}`);
+      }
+      if (!priorityAnswer || priorityAnswer.type !== "score") {
+        throw new Error(`Missing or invalid priority answer for candidate ${i}`);
+      }
+      if (!sanityAnswer || sanityAnswer.type !== "choice") {
+        throw new Error(`Missing or invalid sanity answer for candidate ${i}`);
+      }
+
+      const action = actionAnswer.choice as JevAction;
+      const confidence = actionAnswer.confidence;
+      const actionProbabilities = actionAnswer.probabilities as Record<JevAction, number>;
+      const reasoningCode = reasoningAnswer.choice as ReasoningCode;
+      const priority = Math.round(Math.min(10, Math.max(1, priorityAnswer.score)));
+      const sanity = sanityAnswer.choice as SanityCode;
+
+      if (action === "EXECUTE") {
+        console.log(`  [jev] EXECUTE p=${confidence.toFixed(2)} probs=${JSON.stringify(actionProbabilities)} (${candidates[i].borrower.slice(0,8)})`);
+      }
+
+      decisions.push({
+        action,
+        confidence,
+        actionProbabilities,
+        reasoningCode,
+        priority,
+        sanity,
+        sanityConfidence: sanityAnswer.confidence,
+      });
     }
 
-    const validated = JevDecisionSchema.safeParse(parsed);
-    if (!validated.success) {
-      throw new Error(`Jev output failed schema: ${validated.error.message}`);
-    }
-
-    // Cost tracking (OpenRouter pricing varies by model; assume $0.06/M in/out for now)
-    const tokensIn = data.usage.prompt_tokens;
-    const tokensOut = data.usage.completion_tokens;
-    const costUsd = (tokensIn + tokensOut) * 0.00000006; // $0.06/M
-
+    // Usage tracking — tokens are the real billable metric we can read from
+    // the API (data.usage). The USD figure below is an ESTIMATE based on the
+    // published $0.042/M input-token rate, kept as a rough reference only.
+    const tokensIn = data.usage.input_tokens;
+    const tokensOut = data.usage.output_tokens;
+    const costUsd = tokensIn * 0.000000042; // $0.042/M (estimate)
     this.totalCostUsd += costUsd;
     this.totalCalls++;
+    this.totalTokensIn += tokensIn;
+    this.totalTokensOut += tokensOut;
 
-    return {
-      decision: validated.data,
-      tokensIn,
-      tokensOut,
-      latencyMs,
-      costUsd,
-    };
+    return decisions;
+  }
+
+  // Keep for backward compat (unused after batching)
+  async evaluate(candidate: LiquidationCandidate): Promise<JevCallResult> {
+    const decisions = await this.evaluateBatch([candidate]);
+    return { decision: decisions[0], tokensIn: 0, tokensOut: 0, latencyMs: 0, costUsd: 0 };
   }
 
   getStats() {
-    return { totalCalls: this.totalCalls, totalCostUsd: this.totalCostUsd };
+    return {
+      totalCalls: this.totalCalls,
+      totalCostUsd: this.totalCostUsd, // ESTIMATE only (see above)
+      totalTokensIn: this.totalTokensIn,
+      totalTokensOut: this.totalTokensOut,
+    };
   }
 }
 
 export function createJevClientFromEnv(): JevClient {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY not set");
+  const apiKey = process.env.TYPESAFE_API_KEY;
+  if (!apiKey) throw new Error("TYPESAFE_API_KEY not set");
 
   return new JevClient({
     apiKey,
-    model: process.env.JEV_MODEL ?? "typesafe/jev",
-    temperature: Number(process.env.JEV_TEMPERATURE ?? "0.1"),
-    maxTokens: Number(process.env.JEV_MAX_TOKENS ?? "500"),
-    baseUrl: "https://openrouter.ai/api/v1",
+    model: process.env.JEV_MODEL ?? "jev-latest",
+    baseUrl: "https://api.typesafe.ai",
   });
 }
