@@ -138,6 +138,14 @@ async function main() {
   const JEV_MIN_INTERVAL_MS = Number(process.env.JEV_MIN_INTERVAL_MS ?? "120000");
   let lastJevCallAt = 0;
 
+  // Largest Jev chunk size that ever succeeded. The API rejects any batch
+  // whose context would exceed its cap (max_tokens_exceeded), so the first
+  // oversized batch is halved until it fits — and that learned size is KEPT
+  // for the rest of the run. The old code reset to JEV_BATCH_SIZE after every
+  // success, so every chunk re-paid the same failed calls: 1,267 rejected
+  // requests across one run.
+  let knownGoodBatch = JEV_BATCH_SIZE;
+
   while (true) {
     try {
       // 1. Fetch ETH price
@@ -200,6 +208,22 @@ async function main() {
           gateResult: null,
         });
 
+        // At-risk watch rows are pre-judged ONLY while a warm verdict could
+        // ever be spent: playable = fundable seize (cap), warm profit above the
+        // floor, verifiable oracle age (see lib/watch.ts). Everything else in
+        // the HF 0.98-1.30 band — dust, unprofitable, stale-oracle — cannot
+        // execute even if it crossed the line, so its warm verdict is dead
+        // weight: those rows were ~90% of judged candidates (410 of 459) and
+        // the bulk of the Jev token bill. Show them, never bill for them.
+        if (candidate.watch && !isWatchPlayable(candidate, WATCH_PLAYABLE, ethPriceUsd)) {
+          updateFeedEntry(feedRow(candidate), {
+            gateResult: "watch",
+            gateReason: "at-risk, not playable (size / profit floor / oracle age) - not judged",
+            playable: false,
+          });
+          continue;
+        }
+
         // Pre-Jev gates — skipped for at-risk watch rows on purpose: they are
         // not executable today (HF > 1.0) and the point of the watchlist is
         // Jev's WARM verdict on every visible position, so the verdict is
@@ -250,7 +274,7 @@ async function main() {
       const deferFresh = fresh.length > 0 && Date.now() - lastJevCallAt < JEV_MIN_INTERVAL_MS;
       if (fresh.length > 0 && !deferFresh) {
         let evaluated = 0;
-        let batchSize = JEV_BATCH_SIZE;
+        let batchSize = knownGoodBatch;
         consecutiveJevFailures = 0;
         while (evaluated < fresh.length) {
           const chunk = fresh.slice(evaluated, evaluated + batchSize);
@@ -269,11 +293,12 @@ async function main() {
             });
             apiCalls++;
             evaluated += chunk.length;
-            if (batchSize < JEV_BATCH_SIZE) batchSize = JEV_BATCH_SIZE; // recover
+            knownGoodBatch = batchSize; // largest size that ever worked
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             if (batchSize > 1) {
               batchSize = Math.max(1, Math.floor(batchSize / 2));
+              knownGoodBatch = Math.min(knownGoodBatch, batchSize);
               console.warn(`  Jev batch error (${msg}) - halving batch size to ${batchSize}`);
               continue; // retry this slice with a smaller chunk
             }

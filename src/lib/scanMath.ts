@@ -7,10 +7,34 @@ export function estimateGas(protocol: Protocol): number {
   return protocol === "ionic" ? 750_000 : 900_000;
 }
 
+// Quantizers for the context hash. The hash must change when Jev's DECISION
+// could flip — and only then.
+//
+// Hashing raw continuous fields made the cache useless in production: gas
+// price ticks every block, oracle age counts up every second, pool reserves
+// move on any swap, so ~92% of candidates were bit-different at every 30-min
+// re-eval expiry and the bot re-judged the entire book twice an hour for
+// decisions that had not changed (measured: 1.8M input tokens/hr, 9x the
+// spec's per-candidate budget). Every continuous field is therefore rounded
+// to the number of significant digits at which a gate can actually flip:
+//   - USD magnitudes (collateral/borrow/seize/depth): 3 sig — on five-figure
+//     positions the profit gates live at $200-$500, i.e. ~0.1-1%;
+//   - LTV: 2 sig (~1pp — the "spread too tight" reasoning is ~2pp);
+//   - health factor: 3 sig (~0.01 near the 1.0 line, ~1% deep underwater);
+//   - oracle price: 4 sig (moves rarely; re-read on-chain, not per block);
+//   - gas price: 1 sig — a decision changes when gas roughly doubles or
+//     halves, not when it wobbles 5%;
+//   - oracle age: bucketed into the freshness bands the rules themselves use
+//     (~30s morpho / ~300s ionic), so aging inside a band is free.
+const sig = (v: number, digits: number): string => v.toPrecision(digits);
+
+const ageBand = (sec: number): number =>
+  sec < 60 ? 0 : sec < 300 ? 1 : sec < 1800 ? 2 : 3;
+
 // Deterministic hash of everything Jev sees about a candidate. A cached
-// decision stays valid while the input vector is bit-identical, so the bot can
-// skip re-judging unchanged candidates entirely (steady-state Jev cost -> 0)
-// instead of re-judging them on a fixed timer.
+// decision stays valid while the quantized input vector is identical, so the
+// bot can skip re-judging unchanged candidates entirely (steady-state Jev
+// cost -> 0) instead of re-judging them on a fixed timer.
 export function candidateContextHash(candidate: LiquidationCandidate): string {
   const inputs = [
     candidate.protocol,
@@ -18,24 +42,24 @@ export function candidateContextHash(candidate: LiquidationCandidate): string {
     candidate.collateralAsset,
     candidate.collateralTier,
     candidate.borrowAsset,
-    candidate.currentLtv.toFixed(6),
-    candidate.liquidationThreshold.toFixed(6),
-    candidate.healthFactor.toFixed(9),
-    candidate.collateralBalanceUsd.toFixed(4),
-    candidate.borrowBalanceUsd.toFixed(4),
-    candidate.expectedSeizeUsd.toFixed(4),
-    candidate.oracleFreshnessSec,
-    candidate.gasPriceGwei.toFixed(6),
+    sig(candidate.currentLtv, 2),
+    candidate.liquidationThreshold.toFixed(6), // static per market
+    sig(candidate.healthFactor, 3),
+    sig(candidate.collateralBalanceUsd, 3),
+    sig(candidate.borrowBalanceUsd, 3),
+    sig(candidate.expectedSeizeUsd, 3),
+    ageBand(candidate.oracleFreshnessSec),
+    sig(candidate.gasPriceGwei, 1),
     candidate.estimatedExecutionGas,
-    candidate.recentPriceMovePct30m.toFixed(6),
-    candidate.cascadeScore.toFixed(6),
+    sig(candidate.recentPriceMovePct30m, 2),
+    sig(candidate.cascadeScore, 2),
     candidate.competitionLast10Blocks,
     candidate.ageBlocks,
     candidate.priceSource,
-    candidate.oracleAgeSec ?? "nil",
-    candidate.dexPriceUsd?.toFixed(10) ?? "nil",
-    candidate.exitLiquidityUsd?.toFixed(4) ?? "nil",
-    candidate.oraclePriceUsd?.toFixed(10) ?? "nil",
+    candidate.oracleAgeSec === null ? "nil" : ageBand(candidate.oracleAgeSec),
+    candidate.dexPriceUsd === null ? "nil" : sig(candidate.dexPriceUsd, 3),
+    candidate.exitLiquidityUsd === null ? "nil" : sig(candidate.exitLiquidityUsd, 3),
+    candidate.oraclePriceUsd === null ? "nil" : sig(candidate.oraclePriceUsd, 4),
     candidate.saleVenue ?? "nil",
     candidate.watch ? "watch" : "live",
   ].join("|");

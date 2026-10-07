@@ -141,31 +141,47 @@ function buildBatchState(candidates: LiquidationCandidate[], ethPriceUsd: number
       maxGasPctOfProfit: MAX_GAS_PCT_OF_PROFIT,
       maxHfMismatchPct,
     },
+    // The rule book: sent ONCE per request, referenced by every per-candidate
+    // question (state.rules.action / state.rules.sanity). Repeating it inside
+    // each question's instructions is what made the payload ~9x the spec's
+    // per-candidate budget.
+    rules: {
+      action: ACTION_INSTRUCTIONS,
+      sanity: SANITY_INSTRUCTIONS,
+    },
   };
 }
 
-// Build per-candidate Choice question config
+// Build per-candidate Choice question config.
+//
+// COST NOTE: every question's `instructions` is billed once per candidate —
+// at 4 questions x ~450 candidates x every 30 min, repeating the full rule
+// text here was ~500 tokens/candidate (84% of the per-candidate payload) and
+// pushed 64-candidate batches past the API's max_tokens (1,267 halving
+// retries in one run). The rules live ONCE in state.rules (see
+// buildBatchState) and each instruction below only says which rule applies to
+// which candidate index.
 function makeCandidateQuestions(candidates: LiquidationCandidate[]): Record<string, TypeSafeQuestion> {
   const questions: Record<string, TypeSafeQuestion> = {};
   candidates.forEach((_, i) => {
     questions[`action_${i}`] = {
       type: "choice",
-      instructions: ACTION_INSTRUCTIONS,
+      instructions: `state.candidates[${i}]: apply state.rules.action (hard checks 1-5, thresholds in state.thresholds) and choose this position's fate.`,
       criteria: ACTION_CRITERIA,
     };
     questions[`reasoning_${i}`] = {
       type: "choice",
-      instructions: "What is the single primary reason for this decision? Pick the code that best matches the decisive factor from the checklist.",
+      instructions: `state.candidates[${i}]: what is the single primary reason for your action? Pick the code matching the decisive factor.`,
       criteria: REASONING_CRITERIA,
     };
     questions[`priority_${i}`] = {
       type: "score",
-      instructions: "Priority for execution if it were approved (1=lowest, 10=highest). Driven first by projectedProfitUsd, then by ltvPastThresholdPct, low competition, and liquid/known collateral. Low priority also when upside is marginal.",
+      instructions: `state.candidates[${i}]: priority for execution if approved (1=lowest, 10=highest) - projectedProfitUsd first, then ltvPastThresholdPct, low competition, liquid/known collateral; low when upside is marginal.`,
       criteria: PRIORITY_CRITERIA,
     };
     questions[`sanity_${i}`] = {
       type: "choice",
-      instructions: SANITY_INSTRUCTIONS,
+      instructions: `state.candidates[${i}]: apply state.rules.sanity to its economics - which consistency failure does it show?`,
       criteria: SANITY_CRITERIA,
     };
   });

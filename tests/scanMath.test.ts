@@ -48,14 +48,27 @@ describe("candidateContextHash - skip re-judging unchanged candidates", () => {
   it("changes when any Jev-relevant field moves, so a changed position is re-judged", () => {
     const base = candidateContextHash(cand({}));
     expect(candidateContextHash(cand({ healthFactor: 0.038 }))).not.toBe(base);
-    expect(candidateContextHash(cand({ collateralBalanceUsd: 570.0 }))).not.toBe(base);
+    expect(candidateContextHash(cand({ collateralBalanceUsd: 620 }))).not.toBe(base);
     expect(candidateContextHash(cand({ gasPriceGwei: 0.5 }))).not.toBe(base);
-    expect(candidateContextHash(cand({ currentLtv: 24.8 }))).not.toBe(base);
+    expect(candidateContextHash(cand({ currentLtv: 26 }))).not.toBe(base); // LTV is 2-sig: 24.5 -> 26 is a >1pp move
     expect(candidateContextHash(cand({ competitionLast10Blocks: 3 }))).not.toBe(base);
     expect(candidateContextHash(cand({ collateralTier: "long-tail" }))).not.toBe(base);
     expect(candidateContextHash(cand({ priceSource: "dex" }))).not.toBe(base);
     expect(candidateContextHash(cand({ dexPriceUsd: 0.98, exitLiquidityUsd: 500_000, priceSource: "dex" }))).not.toBe(base);
     expect(candidateContextHash(cand({ oracleAgeSec: 120 }))).not.toBe(base);
+  });
+  // The production bug this guards: raw fields jitter on EVERY scan (gas
+  // ticks, oracle age counts up, reserves move), so hashing them raw invalidated
+  // ~92% of the cache at each 30-min expiry and the whole book was re-judged
+  // twice an hour. Jitter below gate resolution must hash identically.
+  it("is stable under sub-threshold jitter (gas, oracle age, prices, reserves)", () => {
+    const base = candidateContextHash(cand({}));
+    expect(candidateContextHash(cand({ oracleFreshnessSec: 47 }))).toBe(base);   // still <60s band
+    expect(candidateContextHash(cand({ gasPriceGwei: 0.0204 }))).toBe(base);     // 2% gas wobble
+    expect(candidateContextHash(cand({ collateralBalanceUsd: 569.95 }))).toBe(base);
+    expect(candidateContextHash(cand({ healthFactor: 0.03741 }))).toBe(base);
+    expect(candidateContextHash(cand({ dexPriceUsd: 0.9801, exitLiquidityUsd: 500_200, priceSource: "dex" })))
+      .toBe(candidateContextHash(cand({ dexPriceUsd: 0.98, exitLiquidityUsd: 500_000, priceSource: "dex" })));
   });
   it("re-judges when a watched position crosses into liquidation", () => {
     const watch = candidateContextHash(cand({ watch: true, healthFactor: 1.02 }));
