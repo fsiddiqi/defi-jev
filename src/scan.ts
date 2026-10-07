@@ -104,6 +104,7 @@ export async function scanMorpho(
           id
           healthFactor
           market {
+            marketId
             lltv
             oracle { address }
             loanAsset { symbol decimals priceUsd }
@@ -263,6 +264,8 @@ export async function scanMorpho(
 
       candidates.push({
         protocol: "morpho-blue",
+        chainId: 8453,
+        marketId: (market.marketId ?? null) as `0x${string}` | null,
         borrower: p.user.address as `0x${string}`,
         collateralAsset: collateralSymbol,
         collateralTier,

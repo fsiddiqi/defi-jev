@@ -29,7 +29,7 @@ export function estimateGas(): number {
 //   - gas price: 1 sig — a decision changes when gas roughly doubles or
 //     halves, not when it wobbles 5%;
 //   - oracle age: bucketed into the freshness bands the rules themselves use
-//     (~30s morpho / ~300s ionic), so aging inside a band is free.
+//     (~30s morpho), so aging inside a band is free.
 const sig = (v: number, digits: number): string => v.toPrecision(digits);
 
 const ageBand = (sec: number): number =>

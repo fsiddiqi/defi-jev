@@ -43,6 +43,8 @@ export interface FeedEntry {
   gateResult: "passed" | "blocked" | "pending" | "watch" | null;
   gateReason?: string;
   executed?: boolean;
+  /** true only when a REAL on-chain transaction settled (vs paper/dry) */
+  executedForReal?: boolean;
   /** At-risk rows small enough + verifiable enough for a solo bot to play (see lib/watch.ts) */
   playable?: boolean;
 }
@@ -65,6 +67,47 @@ export interface BotState {
   jevApiCallsLastCycle: number;
   cycle: number;
   playable: { capUsd: number; minProfitUsd: number; maxOracleAgeSec: number } | null;
+  /** What the bot can ACTUALLY execute right now (real contract, not a promise) */
+  executor: {
+    contract: string | null;
+    owner: string | null;
+    chainId: number;
+    chains: number[]; // chains the scanner currently covers
+    status: "idle" | "scanning" | "simulating" | "sending" | "waiting";
+  } | null;
+  /** AUTO is gated behind a successful keeper-proof self-test (see lib notes) */
+  selfTestGate: {
+    passed: boolean;
+    at: string | null;
+    txHash: string | null;
+    chainId: number | null;
+    keeperProbeReverted: boolean;
+    costUsd: number | null;
+    error: string | null;
+  } | null;
+  /** Gas budget ledger — the ceiling on unattended spending */
+  gasBudget: {
+    capUsd: number;
+    spentUsd: number;
+    attempts: number;
+    failed: number;
+    lastTxAt: string | null;
+    lastTxHash: string | null;
+    lastTxStatus: string | null;
+    lastTxGasUsd: number;
+    lastTxProfitUsd: number | null;
+  } | null;
+  /** Why the bot is not executing right now (honest idle reason) */
+  idleReason: string | null;
+  lastExecution: {
+    at: string;
+    kind: string;
+    txHash: string | null;
+    success: boolean;
+    profitUsd: number | null;
+    gasUsd: number | null;
+    note: string | null;
+  } | null;
 }
 
 const MAX_FEED = 600;
@@ -86,6 +129,11 @@ const state: BotState = {
   jevApiCallsLastCycle: 0,
   cycle: 0,
   playable: null,
+  executor: null,
+  selfTestGate: null,
+  gasBudget: null,
+  idleReason: null,
+  lastExecution: null,
 };
 
 export function getState(): BotState {

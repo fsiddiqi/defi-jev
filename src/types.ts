@@ -11,6 +11,9 @@ export type AssetTier =
 
 export interface LiquidationCandidate {
   protocol: Protocol;
+  chainId: number;
+  /** Morpho Blue market id (keccak of the 5 market params) */
+  marketId: `0x${string}` | null;
   borrower: `0x${string}`;
   collateralAsset: string;
   collateralTier: AssetTier;
@@ -100,7 +103,8 @@ export interface ExecutionResult {
   txHash?: `0x${string}`;
   gasUsed?: bigint;
   gasCostUsd?: number;
-  collateralSeizedUsd?: number;
+  /** raw COLLATERAL wei seized (not USD — converting needs the collateral price) */
+  seizedCollateralRaw?: bigint;
   slippageUsd?: number;
   profitUsd?: number;
   error?: string;

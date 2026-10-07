@@ -71,6 +71,20 @@
   }
   .filt:hover { color: var(--text); }
   .filt.active { background: #ddf4ff; border-color: var(--blue); color: var(--blue); font-weight: 500; }
+
+  /* Reality panel — the UI only shows what the bot can ACTUALLY do. */
+  .reality-head { display: flex; align-items: baseline; gap: 12px; margin: 0 0 8px; flex-wrap: wrap; }
+  .reality-head h2 { margin: 0; }
+  .r-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 16px;
+  }
+  .r-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 16px; }
+  .r-item .r-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+  .r-item .r-value { font-weight: 500; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .r-item .r-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+  .r-note { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .r-note strong { color: var(--text); }
 </style>
 </head>
 <body>
@@ -98,6 +112,53 @@
   <div class="stat"><div class="label">Jev cost*</div><div class="value" id="s-jev-cost">—</div></div>
 </div>
 <div class="note">*Jev cost = estimated from $0.042/M input tokens (assumed rate) — real billable metric is tokens + calls.</div>
+
+<!-- Reality: every number here is what the bot demonstrably can/can't do. -->
+<div class="feed-head reality-head">
+  <h2>Reality</h2>
+  <span class="meta">idle reason: <strong id="idle-reason">—</strong></span>
+</div>
+<div class="r-card">
+  <div class="r-grid">
+    <div class="r-item">
+      <div class="r-label">Executor contract</div>
+      <div class="r-value mono" id="r-executor">—</div>
+    </div>
+    <div class="r-item">
+      <div class="r-label">Executable chains</div>
+      <div class="r-value" id="r-chains">—</div>
+    </div>
+    <div class="r-item">
+      <div class="r-label">AUTO self-test gate</div>
+      <div class="r-value" id="r-gate">not run</div>
+    </div>
+    <div class="r-item">
+      <div class="r-label">Gate proof tx</div>
+      <div class="r-value mono" id="r-gate-tx">—</div>
+    </div>
+    <div class="r-item">
+      <div class="r-label">Gas budget</div>
+      <div class="r-value" id="r-budget">—</div>
+    </div>
+    <div class="r-item">
+      <div class="r-label">Tx attempts (failed)</div>
+      <div class="r-value" id="r-attempts">—</div>
+    </div>
+    <div class="r-item">
+      <div class="r-label">Last tx</div>
+      <div class="r-value mono" id="r-last-tx">—</div>
+    </div>
+    <div class="r-item">
+      <div class="r-label">Last execution</div>
+      <div class="r-value" id="r-last-exec">—</div>
+    </div>
+  </div>
+  <div class="r-note">
+    AUTO is armed only after a keeper-proof self-liquidation settled on-chain via this
+    executor (gate tx above). Every feed row's Profit/EV numbers are grounded in real
+    on-chain reads + live exit quotes — nothing is placeholder. Gas is capped per-tx and per-day.
+  </div>
+</div>
 
 <div class="feed-head">
   <h2>Candidate feed</h2>
@@ -263,7 +324,11 @@ function renderFeed() {
     const action = d ? d.action : "pending";
     const gate = e.gateResult ?? "pending";
     const gateLabel = gate === "passed" ? "passed" : gate === "blocked" ? "blocked" : gate === "watch" ? "watch" : "…";
-    const exec = e.executed ? ' <span class="badge execute">paper</span>' : "";
+    const exec = e.executedForReal
+      ? ' <span class="badge execute" title="Settled on-chain via the executor">executed</span>'
+      : e.executed
+        ? ' <span class="badge" title="Paper run — logged only, no tx">paper</span>'
+        : "";
     const sanityWarn = d && d.sanity && d.sanity !== "plausible"
       ? ` <span class="neg" title="Jev sanity verdict: ${d.sanity}">⚠ ${d.sanity.replaceAll("_", " ")}</span>`
       : "";
@@ -331,6 +396,64 @@ async function poll() {
     document.getElementById("s-jev-refresh").textContent = s.nextJevRefreshAt
       ? (Math.max(0, Math.ceil((s.nextJevRefreshAt - Date.now()) / 1000))) + "s"
       : "—";
+
+    // ── Reality panel ────────────────────────────────────────────────────
+    document.getElementById("idle-reason").textContent = s.idleReason ?? "waiting for candidates";
+
+    const ex = s.executor;
+    const exEl = document.getElementById("r-executor");
+    exEl.textContent = ex?.contract ? short(ex.contract) : "not deployed";
+    exEl.className = "r-value mono " + (ex?.contract ? "green" : "red");
+    document.getElementById("r-chains").textContent = ex && ex.chains?.length ? ex.chains.join(", ") : "—";
+    document.getElementById("r-chains").title = ex?.chainId ? `executor wired on chain ${ex.chainId}` : "";
+
+    const g = s.selfTestGate;
+    const gateEl = document.getElementById("r-gate");
+    if (!g || !g.passed) {
+      gateEl.textContent = g ? "FAILED" : "not run";
+      gateEl.className = "r-value red";
+      gateEl.title = g?.error ?? "";
+    } else {
+      gateEl.textContent = "PASSED";
+      gateEl.className = "r-value green";
+      gateEl.title = (g.keeperProbeReverted ? "keeper-proof verified · " : "") + "settled " + ago(g.at);
+    }
+    const gateTxEl = document.getElementById("r-gate-tx");
+    gateTxEl.textContent = g?.txHash
+      ? short(g.txHash) + (g.costUsd != null ? " · $" + g.costUsd.toFixed(2) : "")
+      : (g?.passed ? "—" : "—");
+
+    const b = s.gasBudget;
+    const bEl = document.getElementById("r-budget");
+    const aEl = document.getElementById("r-attempts");
+    const ltxEl = document.getElementById("r-last-tx");
+    if (b) {
+      const frac = b.capUsd > 0 ? b.spentUsd / b.capUsd : 0;
+      bEl.textContent = "$" + b.spentUsd.toFixed(2) + " / $" + b.capUsd.toFixed(2) + " day";
+      bEl.className = "r-value " + (frac >= 1 ? "red" : frac > 0.8 ? "yellow" : "");
+      aEl.textContent = b.attempts + (b.failed > 0 ? " (" + b.failed + " fail)" : "");
+      ltxEl.textContent = b.lastTxHash
+        ? short(b.lastTxHash) + " · " + (b.lastTxStatus ?? "?") + " · $" + (b.lastTxGasUsd ?? 0).toFixed(3)
+        : "none yet";
+      ltxEl.title = b.lastTxAt ? "at " + b.lastTxAt + (b.lastTxProfitUsd != null ? " · profit $" + b.lastTxProfitUsd.toFixed(3) : "") : "";
+    } else {
+      bEl.textContent = "—";
+      aEl.textContent = "—";
+      ltxEl.textContent = "—";
+    }
+
+    const le = s.lastExecution;
+    const leEl = document.getElementById("r-last-exec");
+    if (le) {
+      leEl.textContent = le.success
+        ? "✅ " + (le.txHash ? short(le.txHash) : "") + (le.profitUsd != null ? " +$" + le.profitUsd.toFixed(2) : "") + (le.gasUsd != null ? " · gas $" + le.gasUsd.toFixed(3) : "")
+        : "✗ " + (le.note ?? "failed");
+      leEl.title = le.at + (le.kind ? " · " + le.kind : "");
+      leEl.className = "r-value " + (le.success ? "green" : "red");
+    } else {
+      leEl.textContent = "—";
+      leEl.className = "r-value";
+    }
 
     const feed = s.feed ?? [];
     if (JSON.stringify(feed) !== JSON.stringify(lastFeed)) {

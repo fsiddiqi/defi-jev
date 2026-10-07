@@ -7,7 +7,8 @@
     "build": "tsc",
     "scan": "tsx src/main.ts --scan-only",
     "paper": "tsx src/main.ts --paper",
-    "real": "tsx src/main.ts --approve",
+    "self-test": "tsx src/main.ts --self-test",
+    "self-test:dry": "tsx src/main.ts --self-test --dry",
     "auto": "tsx src/main.ts",
     "test": "vitest run"
   },
