@@ -200,6 +200,12 @@
 <script>
 const usd = n => "$" + (n ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const short = a => a ? a.slice(0, 6) + "…" + a.slice(-4) : "—";
+// Chain registry mirror (id → short tag) of src/lib/chains.ts — the feed is
+// multi-chain now; every row shows where it was discovered.
+const CHAIN_TAGS = { 1: "eth", 8453: "base", 10: "op", 42161: "arb", 137: "pol", 130: "uni", 480: "world", 999: "hyper", 143: "monad", 747474: "katana", 988: "stable", 4217: "tempo", 4663: "robinhood", 5042: "arc" };
+const chainTag = id => CHAIN_TAGS[id] != null
+  ? `<span class="badge queue" title="could not be executed here — see Status">${CHAIN_TAGS[id]}</span> `
+  : "";
 const ago = iso => {
   if (!iso) return "—";
   const s = Math.floor((Date.now() - new Date(iso)) / 1000);
@@ -344,7 +350,7 @@ function renderFeed() {
         : `<td class="muted" title="No profitable P(EXECUTE) verdict yet">—</td>`;
     return `<tr>
       <td class="muted">${new Date(e.timestamp).toLocaleTimeString()}${e.scans > 1 ? ` <span title="times seen this session">×${e.scans}</span>` : ""}</td>
-      <td>${e.collateralAsset} → ${e.borrowAsset}</td>
+      <td>${chainTag(e.chainId)}${e.collateralAsset} → ${e.borrowAsset}</td>
       <td class="mono" title="${e.borrower}">${short(e.borrower)}</td>
       <td>${usd(e.expectedSeizeUsd)}</td>
       <td class="${(e.projectedProfitUsd ?? 0) >= 0 ? "" : "neg"}">${usd(e.projectedProfitUsd)}</td>
@@ -414,14 +420,22 @@ async function poll() {
 
     const g = s.selfTestGate;
     const gateEl = document.getElementById("r-gate");
-    if (!g || !g.passed) {
-      gateEl.textContent = g ? "FAILED" : "not run";
+    if (!g) {
+      gateEl.textContent = "not run";
       gateEl.className = "r-value red";
-      gateEl.title = g?.error ?? "";
-    } else {
+      gateEl.title = "";
+    } else if (g.passed && g.settled && g.txHash) {
       gateEl.textContent = "PASSED";
       gateEl.className = "r-value green";
       gateEl.title = (g.keeperProbeReverted ? "keeper-proof verified · " : "") + "settled " + ago(g.at);
+    } else if (g.error?.startsWith?.("dry run")) {
+      gateEl.textContent = "DRY-PROVE — not armed";
+      gateEl.className = "r-value red";
+      gateEl.title = g.error;
+    } else {
+      gateEl.textContent = "FAILED";
+      gateEl.className = "r-value red";
+      gateEl.title = g?.error ?? "";
     }
     const gateTxEl = document.getElementById("r-gate-tx");
     gateTxEl.textContent = g?.txHash

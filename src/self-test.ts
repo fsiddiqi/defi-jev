@@ -69,6 +69,7 @@ const MORPHO_ABI = parseAbi([
   "function borrow((address,address,address,address,uint256),uint256,uint256,address,address) returns (uint256,uint256)",
   "function withdraw((address,address,address,address,uint256),uint256,uint256,address,address) returns (uint256,uint256)",
   "function withdrawCollateral((address,address,address,address,uint256),uint256,address,address)",
+  "function liquidate((address,address,address,address,uint256),address,uint256,uint256,address) returns (uint256,uint256)",
   "function market(bytes32) view returns (uint128 totalSupplyAssets, uint128 totalSupplyShares, uint128 totalBorrowAssets, uint128 totalBorrowShares, uint128 lastUpdate, uint128 fee)",
   "function position(bytes32,address) view returns (uint256 supplyShares, uint128 borrowShares, uint128 collateral)",
   "function isIrmEnabled(address) view returns (bool)",
@@ -105,6 +106,8 @@ export const BUDGET_FILE = join(process.cwd(), "data", "budget.json");
 
 export interface SelfTestGate {
   passed: boolean;
+  /** a real liquidation was settled through the app's own executor (--dry never sets this) */
+  settled: boolean;
   at: string | null;
   txHash: Hex | null;
   chainId: number | null;
@@ -118,7 +121,7 @@ export interface SelfTestGate {
 }
 
 const freshGate = (): SelfTestGate => ({
-  passed: false, at: null, txHash: null, chainId: null, liquidator: null,
+  passed: false, settled: false, at: null, txHash: null, chainId: null, liquidator: null,
   oracle: null, marketId: null, keeperProbeReverted: false,
   gasCostUsd: null, profitUsd: null, error: null,
 });
@@ -142,6 +145,7 @@ function writeGate(g: SelfTestGate): void {
  */
 export function gateEligible(g: SelfTestGate, liquidator: Address, chainId: number): { ok: boolean; reason: string } {
   if (!g.passed) return { ok: false, reason: "self-test gate not passed — run `npm run self-test` first (or --no-auto-gate to override)" };
+  if (!g.settled) return { ok: false, reason: "gate is only a dry-run proof (no real liquidation settled) — run `npm run self-test` to arm AUTO" };
   if (g.liquidator && g.liquidator.toLowerCase() !== liquidator.toLowerCase()) {
     return { ok: false, reason: "gate was proven for a different liquidator contract — re-run --self-test" };
   }
@@ -164,6 +168,8 @@ export interface SelfTestDeps {
 
 export interface SelfTestResult {
   passed: boolean;
+  /** dry run: keeper-proof proven, but no real liquidation settled */
+  dry?: boolean;
   txHash?: Hex;
   gasCostUsd?: number;
   profitUsd?: number;
@@ -196,17 +202,57 @@ export async function runSelfTest(deps: SelfTestDeps, opts: { dry?: boolean } = 
   if (existsSync(STATE_FILE)) {
     try { state = JSON.parse(readFileSync(STATE_FILE, "utf8")); } catch { state = {}; }
   }
-  const saveState = () => writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  const saveState = () => { mkdirSync(join(process.cwd(), "data"), { recursive: true }); writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); };
 
   let gasCostUsd = 0;
   const gasUsd = (gasUsed: bigint, gasPrice: bigint) => (Number(gasUsed) * Number(gasPrice) * deps.ethPriceUsd) / 1e18;
   // Script-style write helper (mirrors jnk/self-liq): the wallet is bound to
-  // chain/acconut at creation; requests add them explicitly for typing.
-  const step = async (label: string, request: Record<string, unknown>): Promise<{ hash: Hex; gasUsed: bigint; gasPrice: bigint }> => {
-    const hash = await wallet.writeContract({ ...request, chain: base, account: wallet.account } as never);
+  // chain/account at creation; requests add them explicitly for typing.
+  //
+  // IMPORTANT (learnt live, 2026-10-07): the wallet's send RPC (drpc) load-
+  // balances across nodes that can lag the node where our previous tx just
+  // mined. viem's internal auto-estimate for the NEXT tx then simulates
+  // against stale state and aborts ("market not created" / "transferFrom
+  // reverted") even though everything on-chain is fine. Fix: estimate on the
+  // SAME provider that confirmed the previous receipt (publicClient), pass an
+  // explicit 30%-buffered gas so the send skips viem's auto-estimate, and
+  // confirm the receipt on that same provider. Sends stay cheap + correct.
+  const step = async (label: string, request: Record<string, unknown>): Promise<{ hash: Hex; gasUsed: bigint; gasPrice: bigint; blockNumber: bigint }> => {
+    // Estimate with retries: publicClient falls back across nodes that can lag
+    // the block where our previous tx just mined — a stale-node estimate would
+    // abort the send with a bogus revert ("market not created"/"transferFrom
+    // reverted"). Lag resolves in seconds; retry beats abort.
+    let gas: bigint = 0n;
+    let lastErr: unknown;
+    for (let i = 0; i < 4 && gas === 0n; i++) {
+      try {
+        gas = await publicClient.estimateContractGas({ ...request, account: wallet.account } as never);
+      } catch (e) {
+        lastErr = e;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+    if (gas === 0n) throw lastErr instanceof Error ? lastErr : new Error(`estimate failed: ${String(lastErr)}`);
+    const hash = await wallet.writeContract({
+      ...request,
+      chain: base,
+      account: wallet.account,
+      gas: (gas * 130n) / 100n + 100_000n, // exact-fit estimates OOG'd in production — 30% buffer + 100k headroom
+    } as never);
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120_000 });
     if (receipt.status !== "success") throw new Error(`${label}: tx reverted ${hash}`);
-    return { hash, gasUsed: receipt.gasUsed, gasPrice: receipt.effectiveGasPrice ?? (await publicClient.getGasPrice()) };
+    // The receipt may have been served by a non-primary fallback node — wait
+    // until OUR read view is at or past the tx block so the next step's
+    // estimate/read never simulates against pre-tx state.
+    if (receipt.blockNumber) {
+      for (let i = 0; i < 12; i++) {
+        const head = await publicClient.getBlockNumber().catch(() => 0n);
+        if (head >= receipt.blockNumber) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+    console.log(`✓ ${label} (gas ${receipt.gasUsed})`);
+    return { hash, gasUsed: receipt.gasUsed, gasPrice: receipt.effectiveGasPrice ?? (await publicClient.getGasPrice()), blockNumber: receipt.blockNumber ?? 0n };
   };
 
   const readPos = () => publicClient.readContract({ address: morpho, abi: MORPHO_ABI, functionName: "position", args: [state.marketId!, owner] }) as Promise<readonly [bigint, bigint, bigint]>;
@@ -254,11 +300,13 @@ export async function runSelfTest(deps: SelfTestDeps, opts: { dry?: boolean } = 
     ));
     saveState();
     let mkt = await readMkt();
+    console.log(`· market id ${state.marketId.slice(0, 10)}… lastUpdate=${mkt[4]} fee=${mkt[5]}`);
     if (mkt[4] === 0n) {
       const r = await step("createMarket (USDC/WETH, oracle v2, irm 0, lltv 0.86)", {
         address: morpho, abi: MORPHO_ABI, functionName: "createMarket", args: [params],
       });
       gasCostUsd += gasUsd(r.gasUsed, r.gasPrice);
+      console.log("✓ market created");
     } else console.log(`· market ${state.marketId.slice(0, 10)}… exists`);
 
     // ── 3. supply loan liquidity (keep $4 of USDC liquid in the wallet) ──────
@@ -275,6 +323,11 @@ export async function runSelfTest(deps: SelfTestDeps, opts: { dry?: boolean } = 
         address: morpho, abi: MORPHO_ABI, functionName: "supply", args: [params, supplyUsdc, 0n, owner, "0x"],
       });
       gasCostUsd += gasUsd(r.gasUsed, r.gasPrice);
+      pos = await readPos();
+      for (let i = 0; i < 5 && pos[0] === 0n; i++) {
+        await new Promise((r2) => setTimeout(r2, 1000));
+        pos = await readPos();
+      }
     } else console.log(`· supply already seeded (shares ${pos[0]})`);
 
     // ── 4. collateral (wrap only if the position has none left to use) ───────
@@ -297,10 +350,21 @@ export async function runSelfTest(deps: SelfTestDeps, opts: { dry?: boolean } = 
         address: morpho, abi: MORPHO_ABI, functionName: "supplyCollateral", args: [params, wrap, owner, "0x"],
       });
       gasCostUsd += gasUsd(r.gasUsed, r.gasPrice);
+      pos = await readPos();
+      for (let i = 0; i < 5 && pos[2] === 0n; i++) {
+        await new Promise((r2) => setTimeout(r2, 1000));
+        pos = await readPos();
+      }
     } else console.log(`· collateral seeded (${Number(formatUnits(pos[2], 18)).toFixed(5)} WETH)`);
 
     // ── 5. borrow sized to the LIVE price → healthy (HF ≈ 1.35) ──────────────
     pos = await readPos();
+    // collateral may read 0 on a lagging fallback node right after seeding —
+    // retry until OUR read view actually sees it (sizing from 0 would abort).
+    for (let i = 0; i < 5 && pos[2] === 0n; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      pos = await readPos();
+    }
     const debtBud = pos[1];
     if (debtBud === 0n) {
       const price = await publicClient.readContract({ address: state.oracle!, abi: ORACLE_V2_ABI, functionName: "price" }) as bigint; // attackPrice=0 → live
@@ -330,19 +394,22 @@ export async function runSelfTest(deps: SelfTestDeps, opts: { dry?: boolean } = 
     const live = await readLive();
 
     // ── 6. arm the attack price → HF 0.90 (debt-capped branch) ───────────────
-    const target = (90n * debt * ORACLE_SCALE) / (pos[2] * LLTV);
+    // HF is 1e18-scaled: hf = pos[2]·price·LLTV / (1e36·debt). Target price for
+    // hf = 0.90 = 0.9e18·1e36·debt / (pos[2]·LLTV) — the live WETH/USDC oracle
+    // price is ~2.6e27 (~$2600·1e24), so 0.90·HF1.35 ≈ 0.667× the live price.
+    const target = (900_000_000_000_000_000n * debt * ORACLE_SCALE) / (pos[2] * LLTV);
     await step(`armAttackPrice($${(Number(target) / 1e24).toFixed(0)}) → HF 0.90`, {
       address: state.oracle!, abi: ORACLE_V2_ABI, functionName: "armAttackPrice", args: [target],
     });
     let attackSeen: bigint | null = null;
     for (let i = 0; i < 5; i++) {
       try {
-        attackSeen = await publicClient.readContract({ address: state.oracle!, abi: ORACLE_V2_ABI, functionName: "price" }) as bigint;
+        attackSeen = await publicClient.readContract({ address: state.oracle!, abi: ORACLE_V2_ABI, functionName: "price", account: owner }) as bigint;
         if (attackSeen === target) break;
-      } catch { /* node lag */ }
+      } catch { /* node lag / rate limit */ }
       await new Promise((r) => setTimeout(r, 1000));
     }
-    if (attackSeen !== target) throw new Error("could not read armed attack price from node");
+    if (attackSeen !== target) throw new Error(`could not read armed attack price from node (saw ${attackSeen ?? "null"}, want ${target})`);
     const hfNow = ((pos[2] * target) / ORACLE_SCALE * LLTV) / debt;
     console.log(`armed price $${(Number(target) / 1e24).toFixed(0)} → our-oracle HF ${(Number(hfNow) / 1e18).toFixed(3)} (live price keeps it healthy at HF~1.35)`);
 
@@ -377,26 +444,62 @@ export async function runSelfTest(deps: SelfTestDeps, opts: { dry?: boolean } = 
       reason: `self-test gate: HF ${(Number(hfNow) / 1e18).toFixed(3)}, full-repay-from-own-collateral`,
     };
 
-    // ── 8. PROVE keepers can't settle us (the point of the v2 oracle) ────────
-    let keeperProbeReverted = false;
-    try {
-      const probe = await publicClient.call({ account: STRANGER, to: liquidator, data: encodeCalldata(target_) });
-      console.log(`✗ KEEPER PROBE DID NOT REVERT${probe.data ? ` (calldata returned ${probe.data.slice(0, 10)}…)` : ""} — gate FAILS`);
-    } catch (e) {
-      keeperProbeReverted = true;
-      const raw = (e as { data?: string })?.data ?? (e as { cause?: { data?: string } })?.cause?.data
-        ?? (typeof (e as { walk?: (f: (c: { data?: string }) => unknown) => unknown })?.walk === "function"
-          ? (e as { walk: (f: (c: { data?: string }) => unknown) => unknown }).walk((c) => c?.data)
-          : undefined);
-      console.log(`✓ keeper probe reverted — ${decodeRevert(raw)} (stranger ${STRANGER} sees the LIVE price → position healthy)`);
+    // ── 8. PROVE keepers can't settle us + our EOA CAN (the point of v2) ─────
+    // Two complementary checks on the exact executor calldata:
+    //  a) stranger → OUR liquidator: the deployed executor is owner-gated, so
+    //     ANY non-owner call reverts NotOwner() — outsiders cannot drive our
+    //     contract no matter what price they read.
+    //  b) owner → OUR liquidator (positive control): with tx.origin == owner the
+    //     v2 oracle reveals the armed attack price, the position is liquidatable
+    //     (HF 0.90), and the simulation settles — proving the armed price is
+    //     visible to us AND the exact calldata the executor will send works.
+    //     This is the same eth_call the executor runs before signing, so a pass
+    //     here = the pre-tx path of a real liquidation.
+    const probeStranger = await (async () => {
+      try {
+        const probe = await publicClient.call({ account: STRANGER, to: liquidator, data: encodeCalldata(target_) });
+        return `DID NOT REVERT${probe.data ? ` (calldata returned ${probe.data.slice(0, 10)}…)` : ""}`;
+      } catch (e) {
+        const raw = (e as { data?: string })?.data ?? (e as { cause?: { data?: string } })?.cause?.data
+          ?? (typeof (e as { walk?: (f: (c: { data?: string }) => unknown) => unknown })?.walk === "function"
+            ? (e as { walk: (f: (c: { data?: string }) => unknown) => unknown }).walk((c) => c?.data)
+            : undefined);
+        return `reverted ${decodeRevert(raw)}`;
+      }
+    })();
+    const controlOwnerSim = await (async () => {
+      try {
+        const c = await publicClient.call({ account: owner, to: liquidator, data: encodeCalldata(target_) });
+        return `settles (${c.data?.slice(0, 10) ?? "no-data"}…)`;
+      } catch (e) {
+        const raw = (e as { data?: string })?.data ?? (e as { cause?: { data?: string } })?.cause?.data
+          ?? (typeof (e as { walk?: (f: (c: { data?: string }) => unknown) => unknown })?.walk === "function"
+            ? (e as { walk: (f: (c: { data?: string }) => unknown) => unknown }).walk((c) => c?.data)
+            : undefined);
+        return `reverted ${decodeRevert(raw)}`;
+      }
+    })();
+    console.log(`  probe a) stranger → liquidator ${STRANGER.slice(0, 8)}…: ${probeStranger} (must revert)`);
+    console.log(`  control b) owner → liquidator sim ${owner.slice(0, 8)}…: ${controlOwnerSim} (must settle)`);
+    if (probeStranger.includes("DID NOT REVERT") || !controlOwnerSim.startsWith("settles")) {
+      throw new Error("keeper-proof property FAILED — outsiders can settle us or our own calldata is broken; NEVER arm AUTO");
     }
-    if (!keeperProbeReverted) throw new Error("keeper-proof property FAILED — attack price visible to strangers; NEVER arm AUTO");
+    const keeperProbeReverted = true;
+    const probeDetail = probeStranger.replace("reverted ", "") + ` / owner-control ${controlOwnerSim}`;
+    console.log(`✓ keeper-proof: ${probeDetail} — outsiders cannot settle our test position`);
 
     // ── 9. the real trade — through the app's own executor (budget, sim, send) ──
     if (opts.dry) {
       console.log("--dry: keeper proof passed; NOT sending the liquidation\n");
-      writeGate({ passed: true, at: new Date().toISOString(), txHash: null, chainId: base.id, liquidator, oracle: state.oracle!, marketId: state.marketId!, keeperProbeReverted: true, gasCostUsd, profitUsd: null, error: null });
-      return { passed: true, keeperProbeReverted: true, oracle: state.oracle, marketId: state.marketId, gasCostUsd };
+      // A dry run proves the oracle keeper-block only — it does NOT exercise the
+      // app's real executor, so it must NEVER arm AUTO. Settled stays false.
+      writeGate({
+        passed: false, settled: false, at: new Date().toISOString(), txHash: null, chainId: base.id,
+        liquidator, oracle: state.oracle!, marketId: state.marketId!, keeperProbeReverted: true,
+        gasCostUsd, profitUsd: null,
+        error: "dry run: keeper proof passed but NO real liquidation settled — run `npm run self-test` to arm AUTO",
+      });
+      return { passed: false, dry: true, keeperProbeReverted: true, oracle: state.oracle, marketId: state.marketId, gasCostUsd, error: "dry run — not armed" };
     }
 
     const budget = loadBudget(deps.budget);
@@ -427,6 +530,7 @@ export async function runSelfTest(deps: SelfTestDeps, opts: { dry?: boolean } = 
 
     const gate: SelfTestGate = {
       passed: true,
+      settled: true, // a real liquidation settled through the app's own executor
       at: new Date().toISOString(),
       txHash: result.txHash ?? null,
       chainId: base.id,

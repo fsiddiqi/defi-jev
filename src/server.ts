@@ -13,6 +13,7 @@ export interface FeedEntry {
   timestamp: string;
   scans: number;
   protocol: string;
+  chainId: number;
   borrower: string;
   collateralAsset: string;
   borrowAsset: string;
@@ -80,6 +81,8 @@ export interface BotState {
   /** AUTO is gated behind a successful keeper-proof self-test (see lib notes) */
   selfTestGate: {
     passed: boolean;
+    /** a real liquidation settled through the app's own executor (dry runs are never settled) */
+    settled: boolean;
     at: string | null;
     txHash: string | null;
     chainId: number | null;

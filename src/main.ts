@@ -112,6 +112,7 @@ async function main() {
   const budget = loadBudget(BUDGET);
   state.selfTestGate = {
     passed: gate.passed,
+    settled: gate.settled,
     at: gate.at,
     txHash: gate.txHash,
     chainId: gate.chainId,
@@ -135,14 +136,18 @@ async function main() {
     const result = await runSelfTest(deps, { dry: SELF_TEST_DRY });
     const g = readGate();
     state.selfTestGate = {
-      passed: g.passed, at: g.at, txHash: g.txHash, chainId: g.chainId,
+      passed: g.passed, settled: g.settled, at: g.at, txHash: g.txHash, chainId: g.chainId,
       keeperProbeReverted: g.keeperProbeReverted, costUsd: g.gasCostUsd, error: g.error,
     };
     state.idleReason = result.passed
       ? SELF_TEST_DRY ? "self-test DRY-run prove (no tx sent)" : "self-test gate PASSED — AUTO is armed"
-      : `self-test FAILED — AUTO stays off: ${result.error}`;
-    console.log(`\ngate status: ${result.passed ? "PASS" : "FAIL"} → ${state.idleReason}`);
-    process.exit(result.passed ? 0 : 1);
+      : result.dry
+        ? "self-test DRY-run prove passed — gate NOT armed (run `npm run self-test` to arm AUTO)"
+        : `self-test FAILED — AUTO stays off: ${result.error}`;
+    console.log(`\ngate status: ${result.passed ? "PASS" : result.dry ? "DRY-PROVE (not armed)" : "FAIL"} → ${state.idleReason}`);
+    // A dry run that completed its proof is a successful dev-loop step even
+    // though it must not arm AUTO (exit 1 would break the dev loop sequence).
+    process.exit(result.passed || result.dry ? 0 : 1);
   }
 
   if (MODE === "AUTO" && !NO_AUTO_GATE) {
@@ -253,6 +258,7 @@ async function main() {
         addFeedEntry({
           timestamp: new Date().toISOString(),
           protocol: candidate.protocol,
+          chainId: candidate.chainId,
           borrower: candidate.borrower,
           collateralAsset: candidate.collateralAsset,
           borrowAsset: candidate.borrowAsset,
