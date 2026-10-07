@@ -1,10 +1,14 @@
-import type { LiquidationCandidate, Protocol } from "../types.js";
+import type { LiquidationCandidate } from "../types.js";
 
 // Pure scan mathematics, extracted from src/scan.ts so the pricing decision
 // (indexer USD vs on-chain oracle) can be unit tested without GraphQL/RPC.
 
-export function estimateGas(protocol: Protocol): number {
-  return protocol === "ionic" ? 750_000 : 900_000;
+// Morpho Blue execution: liquidate() + single swap inside one tx. 900k is a
+// conservative ceiling — the live figure will be measured by --self-test and
+// can only shrink (over-estimating gas makes projected profit conservative,
+// never optimistic).
+export function estimateGas(): number {
+  return 900_000;
 }
 
 // Quantizers for the context hash. The hash must change when Jev's DECISION

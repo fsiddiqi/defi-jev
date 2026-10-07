@@ -212,8 +212,7 @@ describe("discovery: corrupt feed data must not hide executable trades", () => {
 });
 
 describe("gas estimate", () => {
-  it("estimates gas per protocol", () => {
-    expect(estimateGas("morpho-blue")).toBe(900_000);
-    expect(estimateGas("ionic")).toBe(750_000);
+  it("estimates gas (Morpho Blue only)", () => {
+    expect(estimateGas()).toBe(900_000);
   });
 });

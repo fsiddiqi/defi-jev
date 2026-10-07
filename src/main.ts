@@ -4,7 +4,7 @@ import { base } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { JevClient, createJevClientFromEnv } from "./jev/client.js";
 import { scanAll } from "./scan.js";
-import { checkOracleFreshness, checkOracleDivergence, fetchEthPrice } from "./oracle.js";
+import { checkOracleDivergence, fetchEthPrice } from "./oracle.js";
 import { executeLiquidation } from "./execute.js";
 import type { LiquidationCandidate, ExecutionConfig, JevDecision, ScanStats } from "./types.js";
 import { startServer, getState, addFeedEntry, updateFeedEntry, feedKey } from "./server.js";

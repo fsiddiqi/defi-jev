@@ -62,8 +62,7 @@ export function preJevGates(
   candidate: LiquidationCandidate,
   config: ExecutionConfig,
 ): GateVerdict {
-  const oracleTtlSeconds = candidate.protocol === "ionic" ? 300 : 60;
-  if (candidate.oracleFreshnessSec > oracleTtlSeconds) {
+  if (candidate.oracleFreshnessSec > 60) {
     return { pass: false, reason: `Oracle stale (${candidate.oracleFreshnessSec}s)` };
   }
   if (candidate.gasPriceGwei > 100) {

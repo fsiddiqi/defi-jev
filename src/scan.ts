@@ -1,15 +1,13 @@
 import { createPublicClient, http, parseAbi, type PublicClient } from "viem";
 import { base } from "viem/chains";
 import { gql, GraphQLClient } from "graphql-request";
-import type { LiquidationCandidate, Protocol, AssetTier } from "./types.js";
+import type { LiquidationCandidate, AssetTier } from "./types.js";
 import {
   estimateGas,
   resolveCollateralUsd,
 } from "./lib/scanMath.js";
 import { findDexPool, readOracleAgeSec } from "./lib/prices.js";
 import {
-  IONIC_INCENTIVE,
-  ionicSeizedUsd,
   morphoEdgeOfSeize,
   morphoSeizedUsd,
   projectedProfitUsd,
@@ -20,20 +18,6 @@ import {
 const MORPHO_BLUE_ADDRESS = (process.env.MORPHO_BLUE_ADDRESS ?? "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb") as `0x${string}`;
 const USDC_ADDRESS = (process.env.USDC_ADDRESS ?? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913") as `0x${string}`;
 const WETH_ADDRESS = (process.env.WETH_ADDRESS ?? "0x4200000000000000000000000000000000000006") as `0x${string}`;
-
-const CHRONIC_IONIC_BORROWERS = [
-  "0x4f6a86e349e4203262c53d8dcdb1b746c63e346f",
-  "0x0b5897d201d83a9fcbeefc086c100a8eaa5ada9a",
-  "0x06bbdce39a531dfe8cf99916d4a4c21c22ca0f0c",
-  "0x166b9a0390474c455115dfb64579d1d79286588f",
-  "0x31a756d617a498767574a5342921c36cc4352096",
-  "0x1eb322c016815ee5b29c071586c1b75be5934576",
-] as const;
-
-const IONIC_COMPTROLLER_ABI = parseAbi([
-  "function getAccountSnapshot(address) view returns (uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256)",
-  "function getAllMarkets() view returns (address[])",
-]);
 
 const ORACLE_PRICE_ABI = parseAbi(["function price() view returns (uint256)"]);
 
@@ -292,7 +276,7 @@ export async function scanMorpho(
         expectedSeizeUsd: expectedSeize,
         oracleFreshnessSec,
         gasPriceGwei,
-        estimatedExecutionGas: estimateGas("morpho-blue"),
+        estimatedExecutionGas: estimateGas(),
         recentPriceMovePct30m: 0,
         cascadeScore: 0,
         competitionLast10Blocks: 0,
@@ -314,87 +298,11 @@ export async function scanMorpho(
   return candidates;
 }
 
-export async function scanIonicChronic(client: PublicClient, ethPriceUsd: number): Promise<LiquidationCandidate[]> {
-  const candidates: LiquidationCandidate[] = [];
-
-  let gasPriceGwei = 0;
-  try {
-    gasPriceGwei = Number((await client.getGasPrice()) / 1_000_000_000n);
-  } catch {
-    // unknown gas — treat as 0
-  }
-
-  for (const borrower of CHRONIC_IONIC_BORROWERS) {
-    try {
-      const snapshot = await client.readContract({
-        address: MORPHO_BLUE_ADDRESS, // Using Morpho Blue address as Ionic comptroller placeholder
-        abi: IONIC_COMPTROLLER_ABI,
-        functionName: "getAccountSnapshot",
-        args: [borrower as `0x${string}`],
-      }) as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
-
-      // Snapshot returns: error, collateralUsd, borrowUsd, ...
-      // This is a simplification - actual Ionic scanner uses cToken markets
-      const collateralUsd = Number(snapshot[1]) / 1e18 * ethPriceUsd;
-      const borrowUsd = Number(snapshot[2]) / 1e18 * ethPriceUsd;
-
-      if (borrowUsd === 0) continue;
-
-      const ltv = borrowUsd / collateralUsd;
-      if (ltv < 0.8) continue;
-
-      const seizePct = IONIC_INCENTIVE / (1 + IONIC_INCENTIVE);
-      // Ionic is compound-v2 style: repay <= closeFactor * borrow, receive
-      // collateral worth repay * (1 + bonus), capped by posted collateral.
-      const expectedSeize = ionicSeizedUsd(borrowUsd, collateralUsd);
-
-      if (expectedSeize < MIN_SEIZE_USD) {
-        console.log(`[scan] Skipping ${borrower}: seized $${expectedSeize.toFixed(2)} < ${MIN_SEIZE_USD}`);
-        continue;
-      }
-
-      candidates.push({
-        protocol: "ionic",
-        borrower: borrower as `0x${string}`,
-        collateralAsset: "IONIC_COLLATERAL", // placeholder - needs real token resolution
-        collateralTier: getAssetTier("IONIC_COLLATERAL"),
-        borrowAsset: "IONIC_DEBT",
-        currentLtv: ltv,
-        liquidationThreshold: 0.9,
-        healthFactor: 0.9 / ltv,
-        collateralBalanceUsd: collateralUsd,
-        borrowBalanceUsd: borrowUsd,
-        seizePct,
-        expectedSeizeUsd: expectedSeize,
-        oracleFreshnessSec: 300, // Ionic is slower
-        gasPriceGwei,
-        estimatedExecutionGas: estimateGas("ionic"),
-        recentPriceMovePct30m: 0,
-        cascadeScore: 0,
-        competitionLast10Blocks: 0,
-        ageBlocks: 999,
-        oraclePriceUsd: null,
-        oracleAgeSec: null,
-        dexPriceUsd: null,
-        exitLiquidityUsd: null,
-        priceSource: "none",
-        saleVenue: null,
-        watch: false,
-      });
-    } catch {
-      // Skip on error
-    }
-  }
-
-  return candidates;
-}
-
 export async function scanAll(client: PublicClient, ethPriceUsd: number): Promise<LiquidationCandidate[]> {
-  const [morpho, watch, ionic] = await Promise.all([
+  const [morpho, watch] = await Promise.all([
     scanMorpho(client, ethPriceUsd),
     scanMorpho(client, ethPriceUsd, { watch: true }),
-    scanIonicChronic(client, ethPriceUsd),
   ]);
   // Honest projected profit first — the number Jev sees and the feed sorts by.
-  return [...morpho, ...watch, ...ionic].sort((a, b) => projectedProfitUsd(b, ethPriceUsd) - projectedProfitUsd(a, ethPriceUsd));
+  return [...morpho, ...watch].sort((a, b) => projectedProfitUsd(b, ethPriceUsd) - projectedProfitUsd(a, ethPriceUsd));
 }

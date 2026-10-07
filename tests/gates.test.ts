@@ -123,7 +123,6 @@ describe("dataIntegrityGate - the USR false-block regression", () => {
 describe("preJevGates", () => {
   it("blocks stale oracle", () => {
     expect(preJevGates(cand({ oracleFreshnessSec: 61 }), CONFIG).pass).toBe(false);
-    expect(preJevGates(cand({ protocol: "ionic", oracleFreshnessSec: 301 }), CONFIG).pass).toBe(false);
   });
   it("blocks exaggerated gas", () => {
     expect(preJevGates(cand({ gasPriceGwei: 101 }), CONFIG).pass).toBe(false);

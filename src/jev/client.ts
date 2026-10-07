@@ -204,7 +204,7 @@ const ACTION_INSTRUCTIONS = [
   "2. PROFIT: projectedProfitUsd >= thresholds.minProfitUsd and gasCostUsd <= thresholds.maxGasPctOfProfit x projectedProfitUsd.",
   "3. SIZE: expectedSeizeUsd >= thresholds.minSeizeUsd.",
   "4. REALIZABILITY: profit is REAL only when the seized collateral can actually be sold. priceSource 'oracle' (stable/bluechip/lrt — deep real markets) = EXECUTE-eligible; 'dex' = a real on-chain Aerodrome pool was found and priced -> EXECUTE-eligible only if expectedSeizeUsd <= exitCapUsd (seize too big for the pool book is not executable); 'none' (listed/long-tail with NO verifiable pool) = projectedProfitUsd is $0 -> SKIP.",
-  "5. FRESHNESS: oracleFreshnessSec fresh (morpho ~30s, ionic ~300s); priceMove30mPct large -> SKIP.",
+  "5. FRESHNESS: oracleFreshnessSec fresh (morpho ~30s); priceMove30mPct large -> SKIP.",
   "EXECUTE only if ALL pass, numbers unambiguous, confidence high (~0.7+). QUEUE if all pass but one soft signal is marginal. Otherwise SKIP (including under uncertainty).",
 ].join("\n");
 
@@ -217,7 +217,7 @@ const ACTION_CRITERIA: Record<JevAction, string> = {
 const REASONING_CRITERIA: Record<ReasoningCode, string> = {
   high_ltv_low_competition_cascade_tail: "Deeply past LTV threshold and little competition - attractive tail",
   low_edge_gas_risk: `Gas close to or above thresholds.maxGasPctOfProfit x profit, or very high gas price`,
-  stale_oracle_skip: "Oracle freshness exceeds protocol tolerance (~30s morpho, ~300s ionic)",
+  stale_oracle_skip: "Oracle freshness exceeds protocol tolerance (~30s morpho)",
   cascade_saturation: "competitionLast10Blocks >= 3 - market already contested",
   insufficient_seize_value: `expectedSeizeUsd below $${MIN_SEIZE_USD}`,
   oracle_stale: "Oracle stale or update failed",

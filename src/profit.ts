@@ -32,10 +32,6 @@ export const MAX_EXTRA_IMPACT_BPS = 1000; // cap on depth-scaled slippage (10%)
 export const MORPHO_LIQUIDATION_CURSOR = 0.3;
 export const MORPHO_MAX_INCENTIVE = 0.15;
 
-// Ionic (compound-v2 defaults; env-tunable per deployed markets)
-export const IONIC_CLOSE_FACTOR = Math.min(1, Math.max(0, Number(process.env.IONIC_CLOSE_FACTOR ?? "0.5")));
-export const IONIC_INCENTIVE = Math.max(0, Number(process.env.IONIC_INCENTIVE ?? "0.08"));
-
 // Tiers with deep, real markets: the oracle price IS the sale price.
 const EXIT_VERIFIED_TIERS = new Set(["stable", "bluechip", "lrt"]);
 
@@ -69,23 +65,9 @@ export function morphoSeizedUsd(
   return Math.min(collateralUsd, borrowUsd * morphoIncentiveFactor(lltv));
 }
 
-// Compound-v2 style: repay = min(closeFactor * borrow, collateral / (1 + bonus));
-// receive collateral worth repay * (1 + bonus) (so seized <= collateral).
-export function ionicSeizedUsd(
-  borrowUsd: number,
-  collateralUsd: number,
-  closeFactor: number = IONIC_CLOSE_FACTOR,
-  incentive: number = IONIC_INCENTIVE,
-): number {
-  if (borrowUsd <= 0 || collateralUsd <= 0) return 0;
-  const repay = Math.min(closeFactor * borrowUsd, collateralUsd / (1 + incentive));
-  return repay * (1 + incentive);
-}
-
 // Gross collateral value the candidate's liquidation would actually capture.
 export function expectedSeizeUsd(candidate: LiquidationCandidate): number {
-  const { protocol, borrowBalanceUsd, collateralBalanceUsd, liquidationThreshold } = candidate;
-  if (protocol === "ionic") return ionicSeizedUsd(borrowBalanceUsd, collateralBalanceUsd);
+  const { borrowBalanceUsd, collateralBalanceUsd, liquidationThreshold } = candidate;
   return morphoSeizedUsd(borrowBalanceUsd, collateralBalanceUsd, liquidationThreshold);
 }
 
@@ -143,11 +125,6 @@ export function projectedProfitUsd(candidate: LiquidationCandidate, ethPriceUsd:
   const seized = expectedSeizeUsd(candidate);
   if (seized <= 0) return 0;
   const gas = gasCostUsd(candidate, ethPriceUsd);
-
-  if (candidate.protocol === "ionic") {
-    const edge = IONIC_INCENTIVE / (1 + IONIC_INCENTIVE);
-    return seized * edge - gas - seized * (SLIPPAGE_BPS / 10_000);
-  }
 
   // Morpho Blue
   if (!isExitVerified(candidate)) return 0; // no sale venue -> no profit, no fiction

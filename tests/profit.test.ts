@@ -4,8 +4,6 @@ import {
   ETH_USD_ASSUMED,
   exitCapUsd,
   gasCostUsd,
-  IONIC_INCENTIVE,
-  ionicSeizedUsd,
   morphoEdgeOfSeize,
   morphoIncentiveFactor,
   morphoSeizedUsd,
@@ -185,20 +183,33 @@ describe("exit price helpers", () => {
   });
 });
 
-describe("projectedProfitUsd - Ionic (compound-v2 style, unchanged)", () => {
-  const ionicCand = (over: Partial<LiquidationCandidate>) =>
-    cand({ protocol: "ionic", liquidationThreshold: 0.9, ...over });
-
-  it("close-factor bound: repay 50% of borrow, keep the 8% bonus on it", () => {
-    // B=10,000 C=20,000 -> repay 5,000, seize 5,400, edge 400, slip 27, gas 0.054
-    const c = ionicCand({ borrowBalanceUsd: 10_000, collateralBalanceUsd: 20_000 });
-    expect(projectedProfitUsd(c)).toBeCloseTo(400 - 0.054 - 27, 1);
+describe("projectedProfitUsd - Morpho Blue (only executable protocol)", () => {
+  it("oracle-only exit, healthy economics: ratio 1.0, edge = seize * (1 - 1/f)", () => {
+    const c = cand({
+      borrowBalanceUsd: 10_000,
+      collateralBalanceUsd: 20_000,
+      liquidationThreshold: 0.9,
+      collateralTier: "bluechip", // deep real market -> oracle price IS the exit
+      priceSource: "oracle",
+    });
+    const f = morphoIncentiveFactor(0.9);
+    const seized = morphoSeizedUsd(10_000, 20_000, 0.9); // borrow * f (cap at collateral)
+    expect(projectedProfitUsd(c)).toBeCloseTo(
+      seized * (1 - 1 / f) - gasCostUsd(c) - seized * (SLIPPAGE_BPS / 10_000),
+      1,
+    );
   });
 
-  it("collateral-bound: cannot seize more than is posted", () => {
-    // B=100,000 C=500 -> repay 500/1.08, seize 500
-    const c = ionicCand({ borrowBalanceUsd: 100_000, collateralBalanceUsd: 500 });
-    expect(ionicSeizedUsd(100_000, 500)).toBeCloseTo(500, 6);
-    expect(projectedProfitUsd(c)).toBeCloseTo(500 * (IONIC_INCENTIVE / (1 + IONIC_INCENTIVE)) - 0.054 - 2.5, 1);
+  it("no exit venue -> profit is honest $0", () => {
+    const c = cand({
+      borrowBalanceUsd: 10_000,
+      collateralBalanceUsd: 20_000,
+      liquidationThreshold: 0.9,
+      collateralTier: "long-tail",
+      priceSource: "none",
+      dexPriceUsd: null,
+      exitLiquidityUsd: null,
+    });
+    expect(projectedProfitUsd(c)).toBe(0);
   });
 });

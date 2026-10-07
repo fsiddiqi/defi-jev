@@ -1,6 +1,6 @@
 // Shared types for the liquidation racing CLI
 
-export type Protocol = "morpho-blue" | "ionic";
+export type Protocol = "morpho-blue";
 
 export type AssetTier =
   | "stable"
