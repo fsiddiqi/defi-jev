@@ -129,6 +129,10 @@
       <div class="r-value" id="r-chains">—</div>
     </div>
     <div class="r-item">
+      <div class="r-label">Scanning chains</div>
+      <div class="r-value" id="r-scan-chains">—</div>
+    </div>
+    <div class="r-item">
       <div class="r-label">AUTO self-test gate</div>
       <div class="r-value" id="r-gate">not run</div>
     </div>
@@ -406,6 +410,7 @@ async function poll() {
     exEl.className = "r-value mono " + (ex?.contract ? "green" : "red");
     document.getElementById("r-chains").textContent = ex && ex.chains?.length ? ex.chains.join(", ") : "—";
     document.getElementById("r-chains").title = ex?.chainId ? `executor wired on chain ${ex.chainId}` : "";
+    document.getElementById("r-scan-chains").textContent = s.scannedChains?.length ? `${s.scannedChains.length} (${s.scannedChains.join(", ")})` : "—";
 
     const g = s.selfTestGate;
     const gateEl = document.getElementById("r-gate");

@@ -72,9 +72,11 @@ export interface BotState {
     contract: string | null;
     owner: string | null;
     chainId: number;
-    chains: number[]; // chains the scanner currently covers
+    chains: number[]; // chains with a wired executor (executable today)
     status: "idle" | "scanning" | "simulating" | "sending" | "waiting";
   } | null;
+  /** Chains the scanner discovers on (net widened when idle) */
+  scannedChains: number[];
   /** AUTO is gated behind a successful keeper-proof self-test (see lib notes) */
   selfTestGate: {
     passed: boolean;
@@ -130,6 +132,7 @@ const state: BotState = {
   cycle: 0,
   playable: null,
   executor: null,
+  scannedChains: [],
   selfTestGate: null,
   gasBudget: null,
   idleReason: null,

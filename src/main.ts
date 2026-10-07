@@ -3,11 +3,12 @@ import { createPublicClient, createWalletClient, fallback, http, type PublicClie
 import { base } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { createJevClientFromEnv } from "./jev/client.js";
-import { scanAll } from "./scan.js";
+import { buildChainClients, scanAll } from "./scan.js";
 import { checkOracleDivergence, fetchEthPrice } from "./oracle.js";
 import { executeLiquidation, type LoopDeps } from "./execute.js";
 import { buildExecutionTarget } from "./lib/target.js";
 import { loadBudget, DAY_KEY, type BudgetConfig, type BudgetState } from "./lib/budget.js";
+import { CHAINS, SCANNED_CHAIN_IDS, EXECUTABLE_CHAIN_IDS, isExecutableChain } from "./lib/chains.js";
 import { readGate, gateEligible, runSelfTest, GATE_FILE, BUDGET_FILE, type SelfTestDeps } from "./self-test.js";
 import type { LiquidationCandidate, ExecutionConfig, JevDecision, ScanStats } from "./types.js";
 import { startServer, getState, addFeedEntry, updateFeedEntry, feedKey } from "./server.js";
@@ -100,9 +101,10 @@ async function main() {
     contract: LIQUIDATOR || null,
     owner: wallet?.account.address ?? null,
     chainId: base.id,
-    chains: [base.id], // widened from docs/multichain-research.md as venues come online
+    chains: [...EXECUTABLE_CHAIN_IDS],
     status: "idle",
   };
+  state.scannedChains = SCANNED_CHAIN_IDS;
 
   // The AUTO gate: read the persisted self-test record and the budget ledger,
   // surface both in the UI before anything else happens.
@@ -155,6 +157,8 @@ async function main() {
 
   startServer(Number(process.env.UI_PORT ?? 3000), process.env.UI_HOST ?? "0.0.0.0");
 
+  // Read clients per scanned chain (stateless; reused across cycles).
+  const chainClients = buildChainClients();
   // Jev is only created in modes that actually consult the model — scan-only
   // must run with zero Jev dependency (no key required, no tokens touched).
   const jev = MODE === "SCAN-ONLY" ? null : createJevClientFromEnv();
@@ -216,7 +220,7 @@ async function main() {
       console.log(`\n[${new Date().toISOString()}] Scanning...`);
       state.lastScanAt = new Date().toISOString();
       state.executor && (state.executor.status = "scanning");
-      const candidates = await scanAll(publicClient, ethPriceUsd);
+      const candidates = await scanAll(chainClients, ethPriceUsd);
       state.executor && (state.executor.status = "idle");
       stats.candidatesFound += candidates.length;
       state.stats = { ...stats };
@@ -225,7 +229,7 @@ async function main() {
 
       if (MODE === "SCAN-ONLY") {
         for (const c of candidates) {
-          console.log(`    ${c.borrower.slice(0, 8)} LTV=${(c.currentLtv * 100).toFixed(1)}% seize=$${c.expectedSeizeUsd.toFixed(2)} profit=$${projectedProfitUsd(c, ethPriceUsd).toFixed(2)}`);
+          console.log(`    [${CHAINS[c.chainId]?.name ?? c.chainId}] ${c.borrower.slice(0, 8)} LTV=${(c.currentLtv * 100).toFixed(1)}% seize=$${c.expectedSeizeUsd.toFixed(2)} profit=$${projectedProfitUsd(c, ethPriceUsd).toFixed(2)}`);
         }
         await pauseUntilNextScan(3000);
         continue;
@@ -266,6 +270,19 @@ async function main() {
           decision: null,
           gateResult: null,
         });
+
+        // Discovery is wider than execution: chains without a wired executor
+        // (liquidator deployed + self-test gate passed) are shown in the feed
+        // but blocked BEFORE Jev with the honest reason — no token spend on
+        // positions the bot cannot act on.
+        if (!isExecutableChain(candidate.chainId)) {
+          const cname = CHAINS[candidate.chainId]?.name ?? String(candidate.chainId);
+          updateFeedEntry(feedRow(candidate), {
+            gateResult: "blocked",
+            gateReason: `chain ${cname} not executable (no wired executor there) — discovery only`,
+          });
+          continue;
+        }
 
         if (candidate.watch && !isWatchPlayable(candidate, WATCH_PLAYABLE, ethPriceUsd)) {
           updateFeedEntry(feedRow(candidate), {
@@ -469,7 +486,7 @@ async function main() {
       const tokensPerHr = jevTotal.totalTokensIn > 0
         ? Math.round(jevTotal.totalTokensIn / (Math.max(1, nowMs - state.startTime) / 3600000))
         : 0;
-      console.log(`  [status] cycle=${cycleCount} uptime=${uptimeMin}min | candidates=${candidates.length} jev=${apiCalls} call(s) (${fresh.length} fresh, ${cachedJevDecisions} cached) | total=${jevTotal.totalCalls} calls, ${(jevTotal.totalTokensIn / 1000).toFixed(0)}K tokens in (${(tokensPerHr / 1000).toFixed(0)}K/hr, ~${callsPerHr}/hr) | next jev refresh in ${refreshIn}s | gas budget $${state.gasBudget?.spentUsd.toFixed(2)}/${state.gasBudget?.capUsd.toFixed(2)}`);
+      console.log(`  [status] cycle=${cycleCount} uptime=${uptimeMin}min | chains=${SCANNED_CHAIN_IDS.length} scanned/${EXECUTABLE_CHAIN_IDS.size} executable | candidates=${candidates.length} jev=${apiCalls} call(s) (${fresh.length} fresh, ${cachedJevDecisions} cached) | total=${jevTotal.totalCalls} calls, ${(jevTotal.totalTokensIn / 1000).toFixed(0)}K tokens in (${(tokensPerHr / 1000).toFixed(0)}K/hr, ~${callsPerHr}/hr) | next jev refresh in ${refreshIn}s | gas budget $${state.gasBudget?.spentUsd.toFixed(2)}/${state.gasBudget?.capUsd.toFixed(2)}`);
 
       if (stats.candidatesEvaluated % 10 === 0) {
         printStats(stats, jev?.getStats() ?? { totalCalls: 0, totalCostUsd: 0 });

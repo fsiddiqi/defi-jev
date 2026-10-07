@@ -1,4 +1,5 @@
 import { parseAbi, type PublicClient } from "viem";
+import { CHAINS } from "./chains.js";
 
 // ── Price facts ──────────────────────────────────────────────────────────────
 // "No fictions, only facts." Two independent on-chain price sources:
@@ -141,9 +142,10 @@ export function v3Quote(
 const oracleAgeCache = new Map<string, { ageSec: number | null; at: number }>();
 export async function readOracleAgeSec(
   client: PublicClient,
+  chainId: number,
   oracleAddr: `0x${string}`,
 ): Promise<number | null> {
-  const key = oracleAddr.toLowerCase();
+  const key = `${chainId}:${oracleAddr.toLowerCase()}`;
   const hit = oracleAgeCache.get(key);
   if (hit && Date.now() - hit.at < ORACLE_AGE_TTL_MS) return hit.ageSec;
   let ageSec: number | null = null;
@@ -170,10 +172,34 @@ export async function readOracleAgeSec(
   return ageSec;
 }
 
-// Find the deepest single-hop pool for `collateralToken` against the configured
-// quote tokens (USDC/WETH by default), across Aerodrome V2 (stable+volatile)
-// and V3 (100/500/3000/10000 bps). Returns the pool with the largest one-sided
-// depth, or null when the collateral has no verifiable exit venue at all.
+// Find the deepest single-hop pool for `collateralToken` against the chain's
+// verified quote tokens (USDC/WETH by default), across the chain's verified
+// factories (Aerodrome V2 stable+volatile, V3/Slipstream fee tiers — or UniV3
+// on other chains). Returns the pool with the largest one-sided depth, or null
+// when the collateral has no verifiable exit venue at all.
+//
+// chainId === undefined / 8453 keeps the historical Base env-config behavior
+// (DEX_V2_FACTORY = Aerodrome V2, DEX_V3_FACTORY = Slipstream). Other chains
+// use only factories + quote tokens marked verified in src/lib/chains.ts.
+interface LexDexVenues {
+  v2Factory?: `0x${string}`;
+  v3Factory?: `0x${string}`;
+  label: string;
+}
+
+function dexVenues(chainId?: number): LexDexVenues | null {
+  if (chainId === undefined) return { v2Factory: DEX_V2_FACTORY, v3Factory: DEX_V3_FACTORY, label: "aerodrome" };
+  if (chainId === 8453) return { v2Factory: DEX_V2_FACTORY, v3Factory: DEX_V3_FACTORY, label: "aerodrome" };
+  return CHAINS[chainId]?.venues ?? null;
+}
+
+function dexQuoteTokens(chainId?: number): `0x${string}`[] {
+  if (chainId === undefined || chainId === 8453) return DEX_QUOTE_TOKENS as `0x${string}`[];
+  const meta = CHAINS[chainId];
+  if (!meta) return [];
+  return [meta.usdc, meta.weth].filter((t): t is `0x${string}` => Boolean(t));
+}
+
 const dexCache = new Map<string, { quote: DexQuote | null; at: number }>();
 export async function findDexPool(
   client: PublicClient,
@@ -181,60 +207,71 @@ export async function findDexPool(
   collateralDecimals: number,
   collateralSymbol: string,
   quoteUsdMap: Record<string, number>,
+  chainId?: number,
 ): Promise<DexQuote | null> {
-  const key = collateralToken.toLowerCase();
+  const key = `${chainId ?? "base"}:${collateralToken.toLowerCase()}`;
   const hit = dexCache.get(key);
   if (hit && Date.now() - hit.at < DEX_TTL_MS) return hit.quote;
 
+  const venues = dexVenues(chainId);
+  const quoteTokens = dexQuoteTokens(chainId);
+  if (!venues || quoteTokens.length === 0) return null; // unverified factories/tokens — no invented venue
   const coll = collateralToken.toLowerCase() as `0x${string}`;
-  const quotes = DEX_QUOTE_TOKENS.filter((q) => q !== coll);
+  const quotes = quoteTokens.filter((q) => q.toLowerCase() !== coll);
   const results: DexQuote[] = [];
+
+  const v2Active = Boolean(venues.v2Factory);
+  // Preserve the DEX_USE_V3 env toggle for the historical Base path.
+  const v3Gate = chainId === undefined || chainId === 8453 ? DEX_USE_V3 : true;
+  const v3Active = v3Gate && Boolean(venues.v3Factory);
 
   await Promise.all(
     quotes.map(async (q) => {
-      const quoteUsd = quoteUsdMap[q] ?? 1;
-      const quoteDecimals = QUOTE_DECIMALS[q] ?? 18;
-      const qSym = QUOTE_SYMBOLS[q] ?? `${q.slice(0, 6)}…`;
+      const quoteUsd = quoteUsdMap[q.toLowerCase()] ?? 1;
+      const quoteDecimals = QUOTE_DECIMALS[q.toLowerCase()] ?? 18;
+      const qSym = QUOTE_SYMBOLS[q.toLowerCase()] ?? `${q.slice(0, 6)}…`;
 
-      for (const stable of [true, false]) {
-        try {
-          const pool = (await client.readContract({
-            address: DEX_V2_FACTORY,
-            abi: V2_FACTORY_ABI,
-            functionName: "getPool",
-            args: [coll, q as `0x${string}`, stable],
-          })) as `0x${string}`;
-          if (pool === "0x0000000000000000000000000000000000000000") continue;
-          const [reserves, t0] = await Promise.all([
-            client.readContract({ address: pool, abi: V2_POOL_ABI, functionName: "getReserves" }),
-            client.readContract({ address: pool, abi: V2_POOL_ABI, functionName: "token0" }),
-          ]);
-          const token0IsCollateral = (t0 as `0x${string}`).toLowerCase() === coll;
-          const { priceUsd, depthUsd } = v2Quote(
-            reserves as [bigint, bigint],
-            collateralDecimals,
-            quoteDecimals,
-            token0IsCollateral,
-            quoteUsd,
-          );
-          if (priceUsd > 0 && depthUsd > 0) {
-            results.push({
-              dexPriceUsd: priceUsd,
-              exitLiquidityUsd: depthUsd,
-              venue: `aerodrome-v2 ${collateralSymbol}/${qSym} ${stable ? "stable" : "volatile"}`,
-              v3: false,
-            });
+      if (v2Active) {
+        for (const stable of [true, false]) {
+          try {
+            const pool = (await client.readContract({
+              address: venues.v2Factory!,
+              abi: V2_FACTORY_ABI,
+              functionName: "getPool",
+              args: [coll, q as `0x${string}`, stable],
+            })) as `0x${string}`;
+            if (pool === "0x0000000000000000000000000000000000000000") continue;
+            const [reserves, t0] = await Promise.all([
+              client.readContract({ address: pool, abi: V2_POOL_ABI, functionName: "getReserves" }),
+              client.readContract({ address: pool, abi: V2_POOL_ABI, functionName: "token0" }),
+            ]);
+            const token0IsCollateral = (t0 as `0x${string}`).toLowerCase() === coll;
+            const { priceUsd, depthUsd } = v2Quote(
+              reserves as [bigint, bigint],
+              collateralDecimals,
+              quoteDecimals,
+              token0IsCollateral,
+              quoteUsd,
+            );
+            if (priceUsd > 0 && depthUsd > 0) {
+              results.push({
+                dexPriceUsd: priceUsd,
+                exitLiquidityUsd: depthUsd,
+                venue: `${venues.label}-v2 ${collateralSymbol}/${qSym} ${stable ? "stable" : "volatile"}`,
+                v3: false,
+              });
+            }
+          } catch {
+            // pool read failed — skip this candidate pool
           }
-        } catch {
-          // pool read failed — skip this candidate pool
         }
       }
 
-      if (DEX_USE_V3) {
+      if (v3Active) {
         for (const fee of [100, 500, 3000, 10000]) {
           try {
             const pool = (await client.readContract({
-              address: DEX_V3_FACTORY,
+              address: venues.v3Factory!,
               abi: V3_FACTORY_ABI,
               functionName: "getPool",
               args: [coll, q as `0x${string}`, fee],
@@ -258,7 +295,7 @@ export async function findDexPool(
               results.push({
                 dexPriceUsd: priceUsd,
                 exitLiquidityUsd: depthUsd,
-                venue: `aerodrome-v3 ${collateralSymbol}/${qSym} ${(fee / 10000).toFixed(2)}% (approx depth)`,
+                venue: `${venues.label}-v3 ${collateralSymbol}/${qSym} ${(fee / 10000).toFixed(2)}% (approx depth)`,
                 v3: true,
               });
             }
