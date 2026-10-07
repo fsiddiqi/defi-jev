@@ -51,6 +51,7 @@
   .badge.watch { background: #ddf4ff; color: var(--blue); border: 1px solid #b6e3ff; }
 
   .conf { color: var(--muted); font-size: 12px; }
+  td.ev-pos { color: var(--green); font-weight: 600; }
   .empty { text-align: center; color: var(--muted); padding: 32px !important; }
 
   /* Sortable headers */
@@ -80,6 +81,7 @@
   <span class="meta">mode <strong id="mode">—</strong></span>
   <span class="meta">ETH <strong id="eth-price">—</strong></span>
   <span class="meta">last scan <strong id="last-scan">—</strong></span>
+  <span class="meta" id="next-scan-wrap" title="Scan cadence countdown">next scan <strong id="next-scan">—</strong></span>
 </header>
 
 <div class="stats">
@@ -115,6 +117,7 @@
       <th class="sortable" data-key="borrower">Borrower</th>
       <th class="sortable" data-key="seize">Seize</th>
       <th class="sortable" data-key="profit">Profit</th>
+      <th class="sortable" data-key="ev" title="EV = P(EXECUTE) × projected profit — expected USD if you took this shot. Rows without a Jev verdict rank at 0.">EV</th>
       <th class="sortable" data-key="hf">HF</th>
       <th class="sortable" data-key="ltv">LTV</th>
       <th class="sortable" data-key="price">Price</th>
@@ -125,7 +128,7 @@
     </tr>
   </thead>
   <tbody id="feed">
-    <tr><td colspan="12" class="empty">Waiting for data…</td></tr>
+    <tr><td colspan="13" class="empty">Waiting for data…</td></tr>
   </tbody>
 </table>
 
@@ -142,8 +145,13 @@ const ago = iso => {
 };
 const cls = a => (a || "pending").toLowerCase();
 
+// Expected value of taking this shot: P(EXECUTE) × projected profit.
+// Rows Jev hasn't judged (or that only lose money) rank at 0 / below, so the
+// top of the default view is always "the best place to put capital next".
+const evUsd = e => (e.decision?.executeProb ?? 0) * (e.projectedProfitUsd ?? 0);
+
 // ── Sorting ──────────────────────────────────────────────────────────────
-let sortKey = "conf";          // default: highest confidence first
+let sortKey = "ev";            // default: best expected value first (what to play)
 let sortDir = "desc";
 let lastFeed = [];
 
@@ -179,6 +187,7 @@ function sortValue(e, key) {
     case "borrower": return e.borrower.toLowerCase();
     case "seize":    return e.expectedSeizeUsd;
     case "profit":   return e.projectedProfitUsd ?? 0;
+    case "ev":       return evUsd(e);
     case "hf":       return e.healthFactor ?? -1;
     case "ltv":      return e.currentLtv;
     case "exit":     return e.exitLiquidityUsd ?? -1;
@@ -211,7 +220,7 @@ document.querySelectorAll("th.sortable").forEach(th => {
     } else {
       sortKey = key;
       // numeric/text default ascending; conf & time default descending
-      sortDir = ["conf", "time", "seize", "profit", "hf", "ltv", "exit"].includes(key) ? "desc" : "asc";
+      sortDir = ["conf", "ev", "time", "seize", "profit", "hf", "ltv", "exit"].includes(key) ? "desc" : "asc";
     }
     document.querySelectorAll("th.sortable").forEach(x =>
       x.classList.remove("asc", "desc"));
@@ -236,7 +245,7 @@ function renderFeed() {
   const feed = sortedFeed();
   if (feed.length === 0) {
     const msg = lastFeed.length === 0 ? "Waiting for candidates…" : "No rows match this filter.";
-    tbody.innerHTML = `<tr><td colspan="12" class="empty">${msg}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="13" class="empty">${msg}</td></tr>`;
     return;
   }
   const priceBadge = e => {
@@ -258,12 +267,19 @@ function renderFeed() {
     const sanityWarn = d && d.sanity && d.sanity !== "plausible"
       ? ` <span class="neg" title="Jev sanity verdict: ${d.sanity}">⚠ ${d.sanity.replaceAll("_", " ")}</span>`
       : "";
+    const ev = evUsd(e);
+    const evCell = ev > 0
+      ? `<td class="ev-pos" title="EV = ${(d?.executeProb ?? 0).toFixed(2)} × ${usd(e.projectedProfitUsd)}">${usd(ev)}</td>`
+      : ev < 0
+        ? `<td class="neg" title="EV = ${(d?.executeProb ?? 0).toFixed(2)} × ${usd(e.projectedProfitUsd)} — expected loss">${usd(ev)}</td>`
+        : `<td class="muted" title="No profitable P(EXECUTE) verdict yet">—</td>`;
     return `<tr>
       <td class="muted">${new Date(e.timestamp).toLocaleTimeString()}${e.scans > 1 ? ` <span title="times seen this session">×${e.scans}</span>` : ""}</td>
       <td>${e.collateralAsset} → ${e.borrowAsset}</td>
       <td class="mono" title="${e.borrower}">${short(e.borrower)}</td>
       <td>${usd(e.expectedSeizeUsd)}</td>
       <td class="${(e.projectedProfitUsd ?? 0) >= 0 ? "" : "neg"}">${usd(e.projectedProfitUsd)}</td>
+      ${evCell}
       <td class="muted" title="Health factor (indexer; &lt;1 = liquidatable)">${e.healthFactor != null ? e.healthFactor.toFixed(3) : "—"}</td>
       <td class="muted" title="LTV = USD borrowed per $1 of collateral (≥100% = underwater)">${(e.currentLtv * 100).toFixed(0)}%</td>
       <td>${priceBadge(e)}</td>
@@ -284,6 +300,15 @@ async function poll() {
     document.getElementById("mode").textContent = s.mode ?? "—";
     document.getElementById("eth-price").textContent = s.ethPriceUsd ? usd(s.ethPriceUsd) : "—";
     document.getElementById("last-scan").textContent = ago(s.lastScanAt);
+    // Countdown to the next scan — set server-side right before the loop
+    // sleeps, so 0 here means scanning is resuming right now.
+    document.getElementById("next-scan").textContent = s.nextScanAt
+      ? Math.max(0, Math.ceil((s.nextScanAt - Date.now()) / 1000)) + "s"
+      : "—";
+    if (s.scanIntervalMs) {
+      document.getElementById("next-scan-wrap").title =
+        `Scan cadence: every ${Math.round(s.scanIntervalMs / 1000)}s`;
+    }
 
     const st = s.stats;
     if (st) {

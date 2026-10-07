@@ -34,6 +34,8 @@ export interface FeedEntry {
   decision: {
     action: string;
     confidence: number;
+    /** P(EXECUTE) from Jev's full posterior — drives the feed's EV ranking */
+    executeProb?: number;
     reasoningCode: string;
     priority: number;
     sanity?: string;
@@ -51,6 +53,9 @@ export interface BotState {
   startTime: number;
   ethPriceUsd: number;
   lastScanAt: string | null;
+  /** Epoch ms when the next scan cycle starts (set just before each sleep) */
+  nextScanAt: number | null;
+  scanIntervalMs: number;
   candidatesFound: number;
   feed: FeedEntry[];
   stats: ScanStats | null;
@@ -70,6 +75,8 @@ const state: BotState = {
   startTime: Date.now(),
   ethPriceUsd: 0,
   lastScanAt: null,
+  nextScanAt: null,
+  scanIntervalMs: 0,
   candidatesFound: 0,
   feed: [],
   stats: null,

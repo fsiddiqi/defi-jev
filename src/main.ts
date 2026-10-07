@@ -117,6 +117,7 @@ async function main() {
   // Scan cadence — configurable to reduce Morpho API usage (free part; drives
   // how fast NEW liquidations are detected, indexer-bound anyway).
   const SCAN_INTERVAL_MS = Number(process.env.SCAN_INTERVAL_MS ?? "30000");
+  state.scanIntervalMs = SCAN_INTERVAL_MS;
 
   // Playable slice of the at-risk watchlist: sized for a solo bot, profit above
   // a floor, oracle age verifiable. Classification only — never a gate.
@@ -146,6 +147,15 @@ async function main() {
   // requests across one run.
   let knownGoodBatch = JEV_BATCH_SIZE;
 
+  // Waits out the gap before the next scan and publishes the deadline so the
+  // UI can count down ("next scan in 18s") instead of only showing how long
+  // ago the last one was. Set immediately before sleeping, i.e. after all of
+  // this cycle's work, so the countdown hits 0 exactly when scanning resumes.
+  const pauseUntilNextScan = async (ms: number): Promise<void> => {
+    state.nextScanAt = Date.now() + ms;
+    await sleep(ms);
+  };
+
   while (true) {
     try {
       // 1. Fetch ETH price
@@ -165,7 +175,7 @@ async function main() {
         for (const c of candidates) {
           console.log(`    ${c.protocol} ${c.borrower.slice(0,8)} LTV=${(c.currentLtv*100).toFixed(1)}% seize=$${c.expectedSeizeUsd.toFixed(2)}`);
         }
-        await sleep(3000);
+        await pauseUntilNextScan(3000);
         continue;
       }
 
@@ -173,7 +183,7 @@ async function main() {
       const divergence = await checkOracleDivergence(publicClient, "WETH");
       if (divergence.diverged && divergence.pctDiff > CONFIG.oracleDivergenceBps / 10000) {
         console.warn(`  Oracle divergence ${(divergence.pctDiff*100).toFixed(2)}% > ${CONFIG.oracleDivergenceBps}bps - BLOCKING ALL`);
-        await sleep(30000);
+        await pauseUntilNextScan(30000);
         continue;
       }
 
@@ -287,7 +297,7 @@ async function main() {
               decisionOf.set(candidateKey(candidate), d);
               jevCache.set(candidateKey(candidate), { decision: d, at: now, contextHash: candidateContextHash(candidate) });
               updateFeedEntry(feedRow(candidate), {
-                decision: { action: d.action, confidence: d.confidence, reasoningCode: d.reasoningCode, priority: d.priority, sanity: d.sanity },
+                decision: { action: d.action, confidence: d.confidence, executeProb: d.actionProbabilities.EXECUTE ?? 0, reasoningCode: d.reasoningCode, priority: d.priority, sanity: d.sanity },
               });
               console.log(`  Jev: ${d.action} (conf=${d.confidence.toFixed(2)}, code=${d.reasoningCode}, pri=${d.priority}, sanity=${d.sanity}) ${candidate.borrower.slice(0,8)} seize=$${candidate.expectedSeizeUsd.toFixed(0)}`);
             });
@@ -306,7 +316,7 @@ async function main() {
             console.error(`  Jev error (${consecutiveJevFailures}/${MAX_JEV_FAILURES}): ${msg}`);
             if (consecutiveJevFailures >= MAX_JEV_FAILURES) {
               console.error(`  MAX JEV FAILURES REACHED - BLOCKING 30 MINUTES`);
-              await sleep(30 * 60 * 1000);
+              await pauseUntilNextScan(30 * 60 * 1000);
               consecutiveJevFailures = 0;
             }
             stats.jevSkip++;
@@ -329,6 +339,7 @@ async function main() {
           decision: {
             action: jevDecision.action,
             confidence: jevDecision.confidence,
+            executeProb: jevDecision.actionProbabilities.EXECUTE ?? 0,
             reasoningCode: jevDecision.reasoningCode,
             priority: jevDecision.priority,
             sanity: jevDecision.sanity,
@@ -419,11 +430,11 @@ async function main() {
       state.stats = { ...stats };
       state.jevStats = jevTotal;
 
-      await sleep(SCAN_INTERVAL_MS); // configurable scan cadence (default 30s)
+      await pauseUntilNextScan(SCAN_INTERVAL_MS); // configurable scan cadence (default 30s)
 
     } catch (e) {
       console.error(`[${new Date().toISOString()}] Loop error: ${e instanceof Error ? e.message : String(e)}`);
-      await sleep(5000);
+      await pauseUntilNextScan(5000);
     }
   }
 }
