@@ -482,9 +482,7 @@ async function main() {
           }
 
           // One ping when an actionable opportunity is found (before we try it).
-          notifyTelegram(
-            `🎯 ${candidate.collateralAsset}→${candidate.borrowAsset} · seize $${candidate.expectedSeizeUsd.toFixed(0)} · est +$${projectedProfitUsd(candidate, ethPriceUsd).toFixed(0)}`,
-          );
+          notifyTelegram(`🎯 ${candidate.collateralAsset}→${candidate.borrowAsset} · +$${projectedProfitUsd(candidate, ethPriceUsd).toFixed(0)}`);
 
           // AUTO: build the execution target from FRESH on-chain truth + a real
           // exit quote. Any failure here is the honest last line of defense —
@@ -523,9 +521,7 @@ async function main() {
               gateResult: "passed",
               gateReason: `on-chain: ${result.txHash?.slice(0, 10)}… profit ${result.profitUsd != null ? "$" + result.profitUsd.toFixed(2) : "?"}`,
             });
-            notifyTelegram(
-              `✅ done · +$${result.profitUsd != null ? result.profitUsd.toFixed(2) : "?"} · gas $${result.gasCostUsd?.toFixed(3) ?? "?"} · <code>${result.txHash?.slice(0, 12)}…</code>`,
-            );
+            notifyTelegram(`✅ +$${result.profitUsd != null ? result.profitUsd.toFixed(2) : "?"} · ${result.txHash?.slice(0, 14) ?? ""}…`);
           } else {
             updateFeedEntry(feedRow(candidate), {
               gateResult: "blocked",
@@ -566,7 +562,7 @@ async function main() {
         lastDigestAt = nowMs;
         const walletUsd = state.treasury?.wallet?.reduce((s, h) => s + (h.usd ?? 0), 0) ?? null;
         notifyTelegram(
-          `📊 defi-jev · opps ${stats.jevExecute} · done ${stats.jevExecuteSettled} · ` +
+          `📊 opps ${stats.jevExecute} · done ${stats.jevExecuteSettled} · ` +
           `Jev $${jevTotal.totalCostUsd.toFixed(2)} · gas $${state.gasBudget?.spentUsd.toFixed(2)} · ` +
           `wallet $${walletUsd != null ? walletUsd.toFixed(2) : "?"}`,
         );
