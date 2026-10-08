@@ -18,12 +18,18 @@
   }
 
   /* Header */
-  header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
   h1 { font-size: 20px; font-weight: 600; }
   .meta { color: var(--muted); font-size: 13px; }
   .meta strong { color: var(--text); font-weight: 500; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
   .dot.on { background: var(--green); } .dot.off { background: var(--red); }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
+  .tab { border: none; background: transparent; color: var(--muted); font: 13px/1.4 inherit; font-weight: 500; padding: 5px 16px; border-radius: 6px; cursor: pointer; }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: #ddf4ff; color: var(--blue); }
 
   /* Stats — one row of compact pills */
   .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; }
@@ -85,117 +91,165 @@
   .r-item .r-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
   .r-note { margin-top: 8px; font-size: 12px; color: var(--muted); }
   .r-note strong { color: var(--text); }
+  .note { font-size: 12px; color: var(--muted); margin: -16px 0 20px; }
+
+  /* ── Simple view (scoped so nothing collides with the detailed view) ── */
+  #view-simple .sv-takeaway { font-size: 24px; font-weight: 600; line-height: 1.3; }
+  #view-simple .sv-sub { display: block; font-size: 14px; font-weight: 400; color: var(--muted); margin-top: 6px; }
+  #view-simple .sv-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+  #view-simple .sv-h2 { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 20px 0 8px; }
+  #view-simple .sv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  #view-simple .sv-stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+  #view-simple .sv-label { color: var(--muted); font-size: 12px; }
+  #view-simple .sv-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #view-simple .sv-empty { color: var(--muted); font-size: 14px; }
+  #view-simple .sv-note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  #view-simple .sv-big { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #view-simple .sv-pos { color: var(--green); }
+  #view-simple .sv-num { text-align: right; }
+  #view-simple .sv-pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; }
+  #view-simple .sv-pill.ok { background: #dafbe1; color: var(--green); }
+  #view-simple .sv-pill.warn { background: #fff8c5; color: var(--yellow); }
+  #view-simple .sv-pill.info { background: #ddf4ff; color: var(--blue); }
+  #view-simple table { background: transparent; border: none; }
+  #view-simple th { background: transparent; padding-left: 0; }
+  #view-simple td { padding-left: 0; }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>defi-jev</h1>
-  <span class="meta"><span class="dot off" id="status-dot"></span><span id="status-text">connecting…</span></span>
+  <h1><span class="dot off" id="status-dot"></span>defi-jev</h1>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="simple">Simple</button>
+    <button class="tab" data-view="detailed">Detailed</button>
+  </nav>
+  <span class="meta" id="status-text">connecting…</span>
   <span class="meta">mode <strong id="mode">—</strong></span>
   <span class="meta">ETH <strong id="eth-price">—</strong></span>
   <span class="meta">last scan <strong id="last-scan">—</strong></span>
   <span class="meta" id="next-scan-wrap" title="Scan cadence countdown">next scan <strong id="next-scan">—</strong></span>
+  <span class="meta">cycle <strong id="cycle">—</strong></span>
+  <span class="meta">chains <strong id="scanned-chains">—</strong></span>
 </header>
 
-<div class="stats">
-  <div class="stat"><div class="label">Found</div><div class="value blue" id="s-found">0</div></div>
-  <div class="stat"><div class="label">Evaluated</div><div class="value" id="s-evaluated">0</div></div>
-  <div class="stat"><div class="label">Jev: go</div><div class="value green" id="s-jev-execute">0</div></div>
-  <div class="stat"><div class="label">Jev: hold</div><div class="value yellow" id="s-jev-queue">0</div></div>
-  <div class="stat"><div class="label">Jev: skip</div><div class="value" id="s-jev-skip">0</div></div>
-  <div class="stat"><div class="label">Executed</div><div class="value green" id="s-executed">0</div></div>
-  <div class="stat"><div class="label">Reverted</div><div class="value red" id="s-reverted">0</div></div>
-  <div class="stat"><div class="label">Jev tokens</div><div class="value" id="s-jev-tokens">0</div></div>
-  <div class="stat"><div class="label">Jev calls</div><div class="value" id="s-jev-calls">0</div></div>
-  <div class="stat"><div class="label">Jev next eval</div><div class="value" id="s-jev-refresh">—</div></div>
-  <div class="stat"><div class="label">Jev cost*</div><div class="value" id="s-jev-cost">—</div></div>
-</div>
-<div class="note">*Jev cost = estimated from $0.042/M input tokens (assumed rate) — real billable metric is tokens + calls.</div>
+<!-- ═══════════════════════════ SIMPLE ═══════════════════════════ -->
+<section id="view-simple">
+  <div class="sv-card"><div class="sv-takeaway" id="sv-takeaway">…</div></div>
 
-<!-- Reality: every number here is what the bot demonstrably can/can't do. -->
-<div class="feed-head reality-head">
-  <h2>Reality</h2>
-  <span class="meta">idle reason: <strong id="idle-reason">—</strong></span>
-</div>
-<div class="r-card">
-  <div class="r-grid">
-    <div class="r-item">
-      <div class="r-label">Executor contract</div>
-      <div class="r-value mono" id="r-executor">—</div>
-    </div>
-    <div class="r-item">
-      <div class="r-label">Executable chains</div>
-      <div class="r-value" id="r-chains">—</div>
-    </div>
-    <div class="r-item">
-      <div class="r-label">Scanning chains</div>
-      <div class="r-value" id="r-scan-chains">—</div>
-    </div>
-    <div class="r-item">
-      <div class="r-label">AUTO self-test gate</div>
-      <div class="r-value" id="r-gate">not run</div>
-    </div>
-    <div class="r-item">
-      <div class="r-label">Gate proof tx</div>
-      <div class="r-value mono" id="r-gate-tx">—</div>
-    </div>
-    <div class="r-item">
-      <div class="r-label">Gas budget</div>
-      <div class="r-value" id="r-budget">—</div>
-    </div>
-    <div class="r-item">
-      <div class="r-label">Tx attempts (failed)</div>
-      <div class="r-value" id="r-attempts">—</div>
-    </div>
-    <div class="r-item">
-      <div class="r-label">Last tx</div>
-      <div class="r-value mono" id="r-last-tx">—</div>
-    </div>
-    <div class="r-item">
-      <div class="r-label">Last execution</div>
-      <div class="r-value" id="r-last-exec">—</div>
-    </div>
-  </div>
-  <div class="r-note">
-    AUTO is armed only after a keeper-proof self-liquidation settled on-chain via this
-    executor (gate tx above). Every feed row's Profit/EV numbers are grounded in real
-    on-chain reads + live exit quotes — nothing is placeholder. Gas is capped per-tx and per-day.
-  </div>
-</div>
+  <h2 class="sv-h2">Tradable opportunities right now</h2>
+  <div class="sv-card" id="sv-opps"><div class="sv-empty">…</div></div>
 
-<div class="feed-head">
-  <h2>Candidate feed</h2>
-  <div class="filter" id="filter">
-    <button class="filt" data-f="all">All</button>
-    <button class="filt active" data-f="play">Play</button>
-    <button class="filt" data-f="watch">Watch</button>
-    <button class="filt" data-f="pass">Pass</button>
-    <button class="filt" data-f="blocked">Blocked</button>
+  <h2 class="sv-h2">Money</h2>
+  <div class="sv-card" id="sv-money"><div class="sv-empty">…</div></div>
+
+  <h2 class="sv-h2">Stats</h2>
+  <div class="sv-grid" id="sv-stats"></div>
+  <div class="sv-note" id="sv-foot"></div>
+</section>
+
+<!-- ═══════════════════════════ DETAILED ═══════════════════════════ -->
+<section id="view-detailed" hidden>
+
+  <div class="stats">
+    <div class="stat"><div class="label">Found</div><div class="value blue" id="s-found">0</div></div>
+    <div class="stat"><div class="label">Evaluated</div><div class="value" id="s-evaluated">0</div></div>
+    <div class="stat"><div class="label">Jev: go</div><div class="value green" id="s-jev-execute">0</div></div>
+    <div class="stat"><div class="label">Jev: hold</div><div class="value yellow" id="s-jev-queue">0</div></div>
+    <div class="stat"><div class="label">Jev: skip</div><div class="value" id="s-jev-skip">0</div></div>
+    <div class="stat"><div class="label">Executed</div><div class="value green" id="s-executed">0</div></div>
+    <div class="stat"><div class="label">Reverted</div><div class="value red" id="s-reverted">0</div></div>
+    <div class="stat"><div class="label">Jev tokens</div><div class="value" id="s-jev-tokens">0</div></div>
+    <div class="stat"><div class="label">Jev calls</div><div class="value" id="s-jev-calls">0</div></div>
+    <div class="stat"><div class="label">Jev next eval</div><div class="value" id="s-jev-refresh">—</div></div>
+    <div class="stat"><div class="label">Jev cost*</div><div class="value" id="s-jev-cost">—</div></div>
   </div>
-</div>
-<table>
-  <thead>
-    <tr>
-      <th class="sortable" data-key="time">Time</th>
-      <th class="sortable" data-key="market">Market</th>
-      <th class="sortable" data-key="borrower">Borrower</th>
-      <th class="sortable" data-key="seize">Seize</th>
-      <th class="sortable" data-key="profit">Profit</th>
-      <th class="sortable" data-key="ev" title="EV = P(EXECUTE) × projected profit — expected USD if you took this shot. Rows without a Jev verdict rank at 0.">EV</th>
-      <th class="sortable" data-key="hf">HF</th>
-      <th class="sortable" data-key="ltv">LTV</th>
-      <th class="sortable" data-key="price">Price</th>
-      <th class="sortable" data-key="exit">Exit $</th>
-      <th class="sortable" data-key="decision">Decision</th>
-      <th class="sortable desc" data-key="conf">Conf</th>
-      <th class="sortable" data-key="status">Status</th>
-    </tr>
-  </thead>
-  <tbody id="feed">
-    <tr><td colspan="13" class="empty">Waiting for data…</td></tr>
-  </tbody>
-</table>
+  <div class="note">*Jev cost = estimated from $0.042/M input tokens (assumed rate) — real billable metric is tokens + calls.</div>
+
+  <!-- Reality: every number here is what the bot demonstrably can/can't do. -->
+  <div class="feed-head reality-head">
+    <h2>Reality</h2>
+    <span class="meta">idle reason: <strong id="idle-reason">—</strong></span>
+  </div>
+  <div class="r-card">
+    <div class="r-grid">
+      <div class="r-item">
+        <div class="r-label">Executor contract</div>
+        <div class="r-value mono" id="r-executor">—</div>
+      </div>
+      <div class="r-item">
+        <div class="r-label">Executable chains</div>
+        <div class="r-value" id="r-chains">—</div>
+      </div>
+      <div class="r-item">
+        <div class="r-label">Scanning chains</div>
+        <div class="r-value" id="r-scan-chains">—</div>
+      </div>
+      <div class="r-item">
+        <div class="r-label">AUTO self-test gate</div>
+        <div class="r-value" id="r-gate">not run</div>
+      </div>
+      <div class="r-item">
+        <div class="r-label">Gate proof tx</div>
+        <div class="r-value mono" id="r-gate-tx">—</div>
+      </div>
+      <div class="r-item">
+        <div class="r-label">Gas budget</div>
+        <div class="r-value" id="r-budget">—</div>
+      </div>
+      <div class="r-item">
+        <div class="r-label">Tx attempts (failed)</div>
+        <div class="r-value" id="r-attempts">—</div>
+      </div>
+      <div class="r-item">
+        <div class="r-label">Last tx</div>
+        <div class="r-value mono" id="r-last-tx">—</div>
+      </div>
+      <div class="r-item">
+        <div class="r-label">Last execution</div>
+        <div class="r-value" id="r-last-exec">—</div>
+      </div>
+    </div>
+    <div class="r-note">
+      AUTO is armed only after a keeper-proof self-liquidation settled on-chain via this
+      executor (gate tx above). Every feed row's Profit/EV numbers are grounded in real
+      on-chain reads + live exit quotes — nothing is placeholder. Gas is capped per-tx and per-day.
+    </div>
+  </div>
+
+  <div class="feed-head">
+    <h2>Candidate feed</h2>
+    <div class="filter" id="filter">
+      <button class="filt" data-f="all">All</button>
+      <button class="filt active" data-f="play">Play</button>
+      <button class="filt" data-f="watch">Watch</button>
+      <button class="filt" data-f="pass">Pass</button>
+      <button class="filt" data-f="blocked">Blocked</button>
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th class="sortable" data-key="time">Time</th>
+        <th class="sortable" data-key="market">Market</th>
+        <th class="sortable" data-key="borrower">Borrower</th>
+        <th class="sortable" data-key="seize">Seize</th>
+        <th class="sortable" data-key="profit">Profit</th>
+        <th class="sortable" data-key="ev" title="EV = P(EXECUTE) × projected profit — expected USD if you took this shot. Rows without a Jev verdict rank at 0.">EV</th>
+        <th class="sortable" data-key="hf">HF</th>
+        <th class="sortable" data-key="ltv">LTV</th>
+        <th class="sortable" data-key="price">Price</th>
+        <th class="sortable" data-key="exit">Exit $</th>
+        <th class="sortable" data-key="decision">Decision</th>
+        <th class="sortable desc" data-key="conf">Conf</th>
+        <th class="sortable" data-key="status">Status</th>
+      </tr>
+    </thead>
+    <tbody id="feed">
+      <tr><td colspan="13" class="empty">Waiting for data…</td></tr>
+    </tbody>
+  </table>
+</section>
 
 <script>
 const usd = n => "$" + (n ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -215,21 +269,157 @@ const ago = iso => {
   return Math.floor(s / 3600) + "h ago";
 };
 const cls = a => (a || "pending").toLowerCase();
+const pct = v => (v * 100).toFixed(0) + "%";
 
+// ── Tabs ──────────────────────────────────────────────────────────────────
+let activeView = "simple";
+let lastState = null;
+const viewEls = { simple: document.getElementById("view-simple"), detailed: document.getElementById("view-detailed") };
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    activeView = btn.dataset.view;
+    document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b === btn));
+    viewEls.simple.hidden = activeView !== "simple";
+    viewEls.detailed.hidden = activeView !== "detailed";
+    if (lastState) render();
+  });
+});
+function render() {
+  if (!lastState) return;
+  renderHeader(lastState);
+  if (activeView === "simple") renderSimple(lastState);
+  else renderDetailed(lastState);
+}
+
+// ── Shared header ─────────────────────────────────────────────────────────
+function renderHeader(s) {
+  document.getElementById("status-dot").className = "dot " + (s.lastScanAt ? "on" : "off");
+  document.getElementById("status-text").textContent = s.lastScanAt ? "running" : "idle";
+  document.getElementById("mode").textContent = s.mode ?? "—";
+  document.getElementById("eth-price").textContent = s.ethPriceUsd ? usd(s.ethPriceUsd) : "—";
+  document.getElementById("last-scan").textContent = ago(s.lastScanAt);
+  document.getElementById("next-scan").textContent = s.nextScanAt
+    ? Math.max(0, Math.ceil((s.nextScanAt - Date.now()) / 1000)) + "s"
+    : "—";
+  if (s.scanIntervalMs) {
+    document.getElementById("next-scan-wrap").title = `Scan cadence: every ${Math.round(s.scanIntervalMs / 1000)}s`;
+  }
+  document.getElementById("cycle").textContent = s.cycle ?? 0;
+  document.getElementById("scanned-chains").textContent = s.scannedChains?.length
+    ? `${s.scannedChains.length} (${s.scannedChains.join(", ")})`
+    : "—";
+}
+
+// ═══════════════════════════ SIMPLE VIEW ═══════════════════════════
+// Only three questions: can it make money right now, where is the money, and
+// how much has this run cost. Everything else lives on the Detailed tab.
+function simpleOpportunities(s) {
+  return (s.feed ?? []).filter(r =>
+    r.gateResult === "passed" ||
+    (r.decision && s.mode !== "PAPER" && r.decision.action === "EXECUTE")
+  );
+}
+
+function renderSimple(s) {
+  // ── Takeaway ──
+  const opps = simpleOpportunities(s);
+  const watch = (s.feed ?? []).filter(r => r.playable);
+  const le = s.lastExecution;
+  let head, sub = "";
+
+  if (!s.running) {
+    head = "⏸ Stopped";
+    sub = "Process is not running.";
+  } else if (le && le.success && Date.now() - new Date(le.at).getTime() < 3600e3) {
+    head = "✅ Executed a liquidation";
+    sub = `${le.txHash ? short(le.txHash) + " · " : ""}profit ${usd(le.profitUsd)} · gas ${usd(le.gasUsd)} · ${new Date(le.at).toLocaleTimeString()}`;
+  } else if (opps.length) {
+    head = `🔥 ${opps.length} executable opportunit${opps.length === 1 ? "y" : "ies"} right now`;
+    sub = opps.slice(0, 3).map(o => `${o.collateralAsset}/${o.borrowAsset} seize ${usd(o.expectedSeizeUsd)} · profit ${usd(o.projectedProfitUsd)}`).join(" — ");
+  } else if (watch.length) {
+    head = `👀 No execution now — ${watch.length} playable at-risk position${watch.length === 1 ? "" : "s"} on watch`;
+    sub = "Pre-judged; acts the instant one crosses into liquidation.";
+  } else {
+    head = "No executable opportunity right now";
+    sub = s.idleReason ? `Reason: ${s.idleReason}` : "Waiting for a liquidatable Base position with a real exit.";
+  }
+  document.getElementById("sv-takeaway").innerHTML = `${head}<span class="sv-sub">${sub}</span>`;
+
+  // ── Opportunities ──
+  const elopps = document.getElementById("sv-opps");
+  if (!opps.length) {
+    elopps.innerHTML = `<div class="sv-empty">None. ${(s.stats?.candidatesFound ?? 0).toLocaleString()} candidates scanned across ${(s.scannedChains ?? []).length} chains — none passed every gate yet. Blocked candidates never spend gas or Jev tokens.</div>`;
+  } else {
+    elopps.innerHTML = `<table><thead><tr>
+        <th>Market</th><th>Chain</th><th class="sv-num">Seize</th><th class="sv-num">Profit</th>
+        <th class="sv-num">P(exec)</th><th>Status</th></tr></thead><tbody>` +
+      opps.slice(0, 10).map(o => `<tr>
+        <td>${o.collateralAsset}/${o.borrowAsset}<div class="muted mono">${short(o.borrower)}</div></td>
+        <td class="muted">${o.chainId}</td>
+        <td class="sv-num">${usd(o.expectedSeizeUsd)}</td>
+        <td class="sv-num sv-pos">${usd(o.projectedProfitUsd)}</td>
+        <td class="sv-num">${o.decision?.executeProb != null ? pct(o.decision.executeProb) : "—"}</td>
+        <td>${o.executedForReal ? `<span class="sv-pill ok">settled</span>` : `<span class="sv-pill ok">${o.gateResult || ""}</span>`}</td>
+      </tr>`).join("") + `</tbody></table>`;
+  }
+
+  // ── Money ──
+  const t = s.treasury;
+  const elm = document.getElementById("sv-money");
+  if (!t) {
+    elm.innerHTML = `<div class="sv-empty">Reading balances…</div>`;
+  } else {
+    const rows = list => list.length
+      ? list.map(h => `<tr><td>${h.symbol}</td><td class="sv-num">${h.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td><td class="sv-num">${usd(h.usd)}</td></tr>`).join("")
+      : `<tr><td colspan="3" class="muted">empty</td></tr>`;
+    const total = list => list.reduce((a, h) => a + (h.usd || 0), 0);
+    const walletAddr = short(s.executor?.owner);
+    elm.innerHTML = `
+      <table>
+        <thead><tr><th>Wallet <span class="mono muted">${walletAddr}</span></th><th class="sv-num">Amount</th><th class="sv-num">USD</th></tr></thead>
+        <tbody>${rows(t.wallet)}</tbody>
+        <tfoot><tr><th>Wallet total</th><th></th><th class="sv-num sv-big">${usd(total(t.wallet))}</th></tr></tfoot>
+      </table>
+      <table style="margin-top:16px">
+        <thead><tr><th>Executor contract <span class="mono muted">${short(t.contractAddress)}</span></th><th class="sv-num">Amount</th><th class="sv-num">USD</th></tr></thead>
+        <tbody>${rows(t.contract)}</tbody>
+        <tfoot><tr><th>Contract total</th><th></th><th class="sv-num sv-big">${usd(total(t.contract))}</th></tr></tfoot>
+      </table>
+      <div class="sv-note">Grand total ${usd(total(t.wallet) + total(t.contract))} · updated ${t.updatedAt ? new Date(t.updatedAt).toLocaleTimeString() : "—"}. Trades are zero-capital (Morpho pays the collateral out before the repay), so execution needs no wallet funds — only gas. Profit parks in the contract until withdrawn.</div>`;
+  }
+
+  // ── Stats ──
+  const st = s.stats || {}, j = s.jevStats || {}, g = s.gasBudget || {};
+  const up = s.startTime ? ((Date.now() - s.startTime) / 60000).toFixed(0) + "m" : "—";
+  const items = [
+    ["Candidates scanned", (st.candidatesFound || 0).toLocaleString()],
+    ["Judged past all rules", st.jevJudged || 0],
+    ["Jev calls", j.totalCalls || 0],
+    ["Jev spend (app epoch)", usd(j.totalCostUsd || 0)],
+    ["Executed", st.executed || 0],
+    ["Refused by on-chain quote", st.jevExecuteRefusedByOnChain || 0],
+    ["Gas spent today", usd(g.spentUsd || 0)],
+    ["Gas cap today", usd(g.capUsd || 0)],
+    ["Uptime", up],
+  ];
+  document.getElementById("sv-stats").innerHTML = items.map(([l, v]) =>
+    `<div class="sv-stat"><div class="sv-label">${l}</div><div class="sv-value">${v}</div></div>`).join("");
+
+  const gate = s.selfTestGate;
+  document.getElementById("sv-foot").textContent =
+    `AUTO gate: ${gate && gate.passed && gate.settled ? "passed (keeper-proof)" : "NOT passed"} · Jev spend is cumulative since this app run started.`;
+}
+
+// ═══════════════════════════ DETAILED VIEW ═══════════════════════════
 // Expected value of taking this shot: P(EXECUTE) × projected profit.
-// Rows Jev hasn't judged (or that only lose money) rank at 0 / below, so the
-// top of the default view is always "the best place to put capital next".
 const evUsd = e => (e.decision?.executeProb ?? 0) * (e.projectedProfitUsd ?? 0);
 
-// ── Sorting ──────────────────────────────────────────────────────────────
 let sortKey = "ev";            // default: best expected value first (what to play)
 let sortDir = "desc";
 let lastFeed = [];
 
-// ── Filter ────────────────────────────────────────────────────────────────
 // Default view is "Play": at-risk rows a solo bot could actually act on IF they
-// cross (server-side playable flag: sized, profitable, verifiable oracle).
-// Watch = the full at-risk queue. Pass = actually-cleared gates (executable).
+// cross. Watch = full at-risk queue. Pass = actually-cleared gates (executable).
 let filterMode = "play";        // "all" | "play" | "watch" | "pass" | "blocked"
 const passesFilter = e =>
   filterMode === "all" ? true :
@@ -262,229 +452,160 @@ function sortValue(e, key) {
     case "hf":       return e.healthFactor ?? -1;
     case "ltv":      return e.currentLtv;
     case "exit":     return e.exitLiquidityUsd ?? -1;
-    case "price":    return PRICE_ORDER[e.priceSource] ?? 9;
-    case "decision": return ACTION_ORDER[d?.action] ?? 9;
-    case "conf":     return d?.confidence ?? -1;
-    case "status":   return GATE_ORDER[e.gateResult] ?? 9;
-    default:         return 0;
+    case "price":    return PRICE_ORDER[e.priceSource] ?? -1;
+    case "decision": return ACTION_ORDER[(e.decision?.action) || "SKIP"] ?? 3;
+    default:         return -1;
   }
 }
-
-function sortedFeed() {
-  const arr = lastFeed.filter(passesFilter);
-  const sign = sortDir === "asc" ? 1 : -1;
-  arr.sort((a, b) => {
-    const va = sortValue(a, sortKey), vb = sortValue(b, sortKey);
-    if (va < vb) return -1 * sign;
-    if (va > vb) return  1 * sign;
-    // tie-break: newest first
-    return new Date(b.timestamp) - new Date(a.timestamp);
-  });
-  return arr;
-}
-
-document.querySelectorAll("th.sortable").forEach(th => {
-  th.addEventListener("click", () => {
-    const key = th.dataset.key;
-    if (sortKey === key) {
-      sortDir = sortDir === "asc" ? "desc" : "asc";
-    } else {
-      sortKey = key;
-      // numeric/text default ascending; conf & time default descending
-      sortDir = ["conf", "ev", "time", "seize", "profit", "hf", "ltv", "exit"].includes(key) ? "desc" : "asc";
-    }
-    document.querySelectorAll("th.sortable").forEach(x =>
-      x.classList.remove("asc", "desc"));
-    th.classList.add(sortDir);
-    renderFeed();
-  });
-});
 
 function renderFeed() {
+  const feed = lastFeed.filter(passesFilter);
   const tbody = document.getElementById("feed");
-
-  // per-filter counts on the toggle buttons
-  const counts = { all: lastFeed.length, play: 0, watch: 0, pass: 0, blocked: 0 };
-  lastFeed.forEach(e => {
-    if (e.gateResult === "blocked") counts.blocked++;
-    else if (e.gateResult === "watch") { counts.watch++; if (e.playable) counts.play++; }
-    else if (e.gateResult === "passed") counts.pass++;
-  });
-  document.querySelectorAll(".filt").forEach(b =>
-    b.textContent = { all: "All", play: "Play", watch: "Watch", pass: "Pass", blocked: "Blocked" }[b.dataset.f] + ` (${counts[b.dataset.f]})`);
-
-  const feed = sortedFeed();
-  if (feed.length === 0) {
-    const msg = lastFeed.length === 0 ? "Waiting for candidates…" : "No rows match this filter.";
-    tbody.innerHTML = `<tr><td colspan="13" class="empty">${msg}</td></tr>`;
+  if (!feed.length) {
+    tbody.innerHTML = `<tr><td colspan="13" class="empty">No candidates in this view yet.</td></tr>`;
     return;
   }
-  const priceBadge = e => {
-    switch (e.priceSource) {
-      case "dex":
-        return `<span class="badge dex" title="Real on-chain pool: ${e.saleVenue ?? ""} · one-sided depth ${usd(e.exitLiquidityUsd)}">dex</span>`;
-      case "none":
-        return `<span class="badge blocked" title="No verifiable exit venue — projected profit is $0">none</span>`;
-      default:
-        return `<span class="badge queue" title="Oracle price = exit price (deep real market)">oracle</span>`;
-    }
-  };
+  feed.sort((a, b) => {
+    const av = sortValue(a, sortKey), bv = sortValue(b, sortKey);
+    if (av < bv) return sortDir === "asc" ? -1 : 1;
+    if (av > bv) return sortDir === "asc" ? 1 : -1;
+    return 0;
+  });
   tbody.innerHTML = feed.map(e => {
     const d = e.decision;
-    const action = d ? d.action : "pending";
     const gate = e.gateResult ?? "pending";
-    const gateLabel = gate === "passed" ? "passed" : gate === "blocked" ? "blocked" : gate === "watch" ? "watch" : "…";
-    const exec = e.executedForReal
-      ? ' <span class="badge execute" title="Settled on-chain via the executor">executed</span>'
-      : e.executed
-        ? ' <span class="badge" title="Paper run — logged only, no tx">paper</span>'
-        : "";
-    const sanityWarn = d && d.sanity && d.sanity !== "plausible"
-      ? ` <span class="neg" title="Jev sanity verdict: ${d.sanity}">⚠ ${d.sanity.replaceAll("_", " ")}</span>`
-      : "";
     const ev = evUsd(e);
-    const evCell = ev > 0
-      ? `<td class="ev-pos" title="EV = ${(d?.executeProb ?? 0).toFixed(2)} × ${usd(e.projectedProfitUsd)}">${usd(ev)}</td>`
-      : ev < 0
-        ? `<td class="neg" title="EV = ${(d?.executeProb ?? 0).toFixed(2)} × ${usd(e.projectedProfitUsd)} — expected loss">${usd(ev)}</td>`
-        : `<td class="muted" title="No profitable P(EXECUTE) verdict yet">—</td>`;
+    const badge = a => `<span class="badge ${cls(a)}">${a ?? "—"}</span>`;
     return `<tr>
-      <td class="muted">${new Date(e.timestamp).toLocaleTimeString()}${e.scans > 1 ? ` <span title="times seen this session">×${e.scans}</span>` : ""}</td>
+      <td class="muted">${e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : "—"}</td>
       <td>${chainTag(e.chainId)}${e.collateralAsset} → ${e.borrowAsset}</td>
-      <td class="mono" title="${e.borrower}">${short(e.borrower)}</td>
+      <td class="mono">${short(e.borrower)}</td>
       <td>${usd(e.expectedSeizeUsd)}</td>
-      <td class="${(e.projectedProfitUsd ?? 0) >= 0 ? "" : "neg"}">${usd(e.projectedProfitUsd)}</td>
-      ${evCell}
-      <td class="muted" title="Health factor (indexer; &lt;1 = liquidatable)">${e.healthFactor != null ? e.healthFactor.toFixed(3) : "—"}</td>
-      <td class="muted" title="LTV = USD borrowed per $1 of collateral (≥100% = underwater)">${(e.currentLtv * 100).toFixed(0)}%</td>
-      <td>${priceBadge(e)}</td>
-      <td class="muted" title="${e.saleVenue ?? ""}">${e.exitLiquidityUsd ? usd(e.exitLiquidityUsd) : "—"}</td>
-      <td><span class="badge ${cls(action)}">${action}</span> <span class="muted">${d ? d.reasoningCode.replaceAll("_", " ") : ""}</span>${sanityWarn}</td>
-      <td class="conf">${d ? d.confidence.toFixed(2) : "—"}</td>
-      <td><span class="badge ${gate}" title="${e.gateReason ?? ""}">${gateLabel}</span>${e.playable ? ' <span class="badge execute" title="At-risk row a solo bot could fund & exit IF it crosses (seize ≤ cap, warm profit ≥ floor); price re-read on-chain each scan, verified-stale oracles excluded">play</span>' : ""}${exec}</td>
+      <td class="${(e.projectedProfitUsd ?? 0) < 0 ? "neg" : ""}">${usd(e.projectedProfitUsd)}</td>
+      <td class="${ev > 0 ? "ev-pos" : "muted"}">${ev > 0 ? usd(ev) : "—"}</td>
+      <td class="muted">${e.healthFactor != null ? e.healthFactor.toFixed(3) : "—"}</td>
+      <td class="muted">${(e.currentLtv * 100).toFixed(0)}%</td>
+      <td class="muted">${e.priceSource ?? "—"}</td>
+      <td class="muted">${usd(e.exitLiquidityUsd)}</td>
+      <td>${d ? badge(d.action) + ' <span class="conf">' + (d.reasoningCode ?? "") + "</span>" : '<span class="badge pending">pending</span>'}</td>
+      <td class="conf">${d?.confidence != null ? d.confidence.toFixed(2) : "—"}</td>
+      <td>${badge(gate)}${e.executedForReal ? ' <span class="badge execute">real</span>' : ""}</td>
     </tr>`;
   }).join("");
 }
 
+function renderDetailed(s) {
+  const st = s.stats;
+  if (st) {
+    document.getElementById("s-found").textContent = st.candidatesFound ?? 0;
+    document.getElementById("s-evaluated").textContent = st.candidatesEvaluated ?? 0;
+    document.getElementById("s-jev-execute").textContent = st.jevExecute ?? 0;
+    document.getElementById("s-jev-queue").textContent = st.jevQueue ?? 0;
+    document.getElementById("s-jev-skip").textContent = st.jevSkip ?? 0;
+    document.getElementById("s-executed").textContent = st.executed ?? 0;
+    document.getElementById("s-reverted").textContent = st.reverted ?? 0;
+  }
+  if (s.jevStats) {
+    const j = s.jevStats;
+    document.getElementById("s-jev-tokens").textContent = (j.totalTokensIn ?? 0) >= 1000
+      ? (j.totalTokensIn / 1000).toFixed(0) + "K in"
+      : String(j.totalTokensIn ?? 0) + " in";
+    document.getElementById("s-jev-calls").textContent = String(j.totalCalls ?? 0);
+    document.getElementById("s-jev-cost").textContent = "$" + (j.totalCostUsd ?? 0).toFixed(6);
+  }
+  document.getElementById("s-jev-refresh").textContent = s.nextJevRefreshAt
+    ? (Math.max(0, Math.ceil((s.nextJevRefreshAt - Date.now()) / 1000))) + "s"
+    : "—";
+
+  // Reality panel
+  document.getElementById("idle-reason").textContent = s.idleReason ?? "waiting for candidates";
+
+  const ex = s.executor;
+  const exEl = document.getElementById("r-executor");
+  exEl.textContent = ex?.contract ? short(ex.contract) : "not deployed";
+  exEl.className = "r-value mono " + (ex?.contract ? "green" : "red");
+  document.getElementById("r-chains").textContent = ex?.chains?.length ? ex.chains.join(", ") : "—";
+  document.getElementById("r-chains").title = ex?.chainId ? `executor wired on chain ${ex.chainId}` : "";
+  document.getElementById("r-scan-chains").textContent = s.scannedChains?.length ? `${s.scannedChains.length} (${s.scannedChains.join(", ")})` : "—";
+
+  const g = s.selfTestGate;
+  const gateEl = document.getElementById("r-gate");
+  if (!g) {
+    gateEl.textContent = "not run";
+    gateEl.className = "r-value red";
+    gateEl.title = "";
+  } else if (g.passed && g.settled && g.txHash) {
+    gateEl.textContent = "PASSED";
+    gateEl.className = "r-value green";
+    gateEl.title = (g.keeperProbeReverted ? "keeper-proof verified · " : "") + "settled " + ago(g.at);
+  } else if (g.error?.startsWith?.("dry run")) {
+    gateEl.textContent = "DRY-PROVE — not armed";
+    gateEl.className = "r-value red";
+    gateEl.title = g.error;
+  } else {
+    gateEl.textContent = "FAILED";
+    gateEl.className = "r-value red";
+    gateEl.title = g?.error ?? "";
+  }
+  const gateTxEl = document.getElementById("r-gate-tx");
+  gateTxEl.textContent = g?.txHash
+    ? short(g.txHash) + (g.costUsd != null ? " · $" + g.costUsd.toFixed(2) : "")
+    : "—";
+
+  const b = s.gasBudget;
+  const bEl = document.getElementById("r-budget");
+  const aEl = document.getElementById("r-attempts");
+  const ltxEl = document.getElementById("r-last-tx");
+  if (b) {
+    const frac = b.capUsd > 0 ? b.spentUsd / b.capUsd : 0;
+    bEl.textContent = "$" + b.spentUsd.toFixed(2) + " / $" + b.capUsd.toFixed(2) + " day";
+    bEl.className = "r-value " + (frac >= 1 ? "red" : frac > 0.8 ? "yellow" : "");
+    aEl.textContent = b.attempts + (b.failed > 0 ? " (" + b.failed + " fail)" : "");
+    ltxEl.textContent = b.lastTxHash
+      ? short(b.lastTxHash) + " · " + (b.lastTxStatus ?? "?") + " · $" + (b.lastTxGasUsd ?? 0).toFixed(3)
+      : "none yet";
+    ltxEl.title = b.lastTxAt ? "at " + b.lastTxAt + (b.lastTxProfitUsd != null ? " · profit $" + b.lastTxProfitUsd.toFixed(3) : "") : "";
+  } else {
+    bEl.textContent = "—";
+    aEl.textContent = "—";
+    ltxEl.textContent = "—";
+  }
+
+  const le = s.lastExecution;
+  const leEl = document.getElementById("r-last-exec");
+  if (le) {
+    leEl.textContent = le.success
+      ? "✅ " + (le.txHash ? short(le.txHash) : "") + (le.profitUsd != null ? " +$" + le.profitUsd.toFixed(2) : "") + (le.gasUsd != null ? " · gas $" + le.gasUsd.toFixed(3) : "")
+      : "✗ " + (le.note ?? "failed");
+    leEl.title = le.at + (le.kind ? " · " + le.kind : "");
+    leEl.className = "r-value " + (le.success ? "green" : "red");
+  } else {
+    leEl.textContent = "—";
+    leEl.className = "r-value";
+  }
+
+  const feed = s.feed ?? [];
+  if (JSON.stringify(feed) !== JSON.stringify(lastFeed)) {
+    lastFeed = feed;
+    renderFeed();
+  }
+}
+
+// ── Poll ──────────────────────────────────────────────────────────────────
 async function poll() {
   try {
     const s = await (await fetch("/api/status")).json();
-
-    document.getElementById("status-dot").className = "dot " + (s.lastScanAt ? "on" : "off");
-    document.getElementById("status-text").textContent = s.lastScanAt ? "running" : "idle";
-    document.getElementById("mode").textContent = s.mode ?? "—";
-    document.getElementById("eth-price").textContent = s.ethPriceUsd ? usd(s.ethPriceUsd) : "—";
-    document.getElementById("last-scan").textContent = ago(s.lastScanAt);
-    // Countdown to the next scan — set server-side right before the loop
-    // sleeps, so 0 here means scanning is resuming right now.
-    document.getElementById("next-scan").textContent = s.nextScanAt
-      ? Math.max(0, Math.ceil((s.nextScanAt - Date.now()) / 1000)) + "s"
-      : "—";
-    if (s.scanIntervalMs) {
-      document.getElementById("next-scan-wrap").title =
-        `Scan cadence: every ${Math.round(s.scanIntervalMs / 1000)}s`;
-    }
-
-    const st = s.stats;
-    if (st) {
-      document.getElementById("s-found").textContent = st.candidatesFound ?? 0;
-      document.getElementById("s-evaluated").textContent = st.candidatesEvaluated ?? 0;
-      document.getElementById("s-jev-execute").textContent = st.jevExecute ?? 0;
-      document.getElementById("s-jev-queue").textContent = st.jevQueue ?? 0;
-      document.getElementById("s-jev-skip").textContent = st.jevSkip ?? 0;
-      document.getElementById("s-executed").textContent = st.executed ?? 0;
-      document.getElementById("s-reverted").textContent = st.reverted ?? 0;
-    }
-    if (s.jevStats) {
-      const j = s.jevStats;
-      document.getElementById("s-jev-tokens").textContent = (j.totalTokensIn ?? 0) >= 1000
-        ? (j.totalTokensIn / 1000).toFixed(0) + "K in"
-        : String(j.totalTokensIn ?? 0) + " in";
-      document.getElementById("s-jev-calls").textContent = String(j.totalCalls ?? 0);
-      document.getElementById("s-jev-cost").textContent = "$" + (j.totalCostUsd ?? 0).toFixed(6);
-    }
-    document.getElementById("s-jev-refresh").textContent = s.nextJevRefreshAt
-      ? (Math.max(0, Math.ceil((s.nextJevRefreshAt - Date.now()) / 1000))) + "s"
-      : "—";
-
-    // ── Reality panel ────────────────────────────────────────────────────
-    document.getElementById("idle-reason").textContent = s.idleReason ?? "waiting for candidates";
-
-    const ex = s.executor;
-    const exEl = document.getElementById("r-executor");
-    exEl.textContent = ex?.contract ? short(ex.contract) : "not deployed";
-    exEl.className = "r-value mono " + (ex?.contract ? "green" : "red");
-    document.getElementById("r-chains").textContent = ex && ex.chains?.length ? ex.chains.join(", ") : "—";
-    document.getElementById("r-chains").title = ex?.chainId ? `executor wired on chain ${ex.chainId}` : "";
-    document.getElementById("r-scan-chains").textContent = s.scannedChains?.length ? `${s.scannedChains.length} (${s.scannedChains.join(", ")})` : "—";
-
-    const g = s.selfTestGate;
-    const gateEl = document.getElementById("r-gate");
-    if (!g) {
-      gateEl.textContent = "not run";
-      gateEl.className = "r-value red";
-      gateEl.title = "";
-    } else if (g.passed && g.settled && g.txHash) {
-      gateEl.textContent = "PASSED";
-      gateEl.className = "r-value green";
-      gateEl.title = (g.keeperProbeReverted ? "keeper-proof verified · " : "") + "settled " + ago(g.at);
-    } else if (g.error?.startsWith?.("dry run")) {
-      gateEl.textContent = "DRY-PROVE — not armed";
-      gateEl.className = "r-value red";
-      gateEl.title = g.error;
-    } else {
-      gateEl.textContent = "FAILED";
-      gateEl.className = "r-value red";
-      gateEl.title = g?.error ?? "";
-    }
-    const gateTxEl = document.getElementById("r-gate-tx");
-    gateTxEl.textContent = g?.txHash
-      ? short(g.txHash) + (g.costUsd != null ? " · $" + g.costUsd.toFixed(2) : "")
-      : (g?.passed ? "—" : "—");
-
-    const b = s.gasBudget;
-    const bEl = document.getElementById("r-budget");
-    const aEl = document.getElementById("r-attempts");
-    const ltxEl = document.getElementById("r-last-tx");
-    if (b) {
-      const frac = b.capUsd > 0 ? b.spentUsd / b.capUsd : 0;
-      bEl.textContent = "$" + b.spentUsd.toFixed(2) + " / $" + b.capUsd.toFixed(2) + " day";
-      bEl.className = "r-value " + (frac >= 1 ? "red" : frac > 0.8 ? "yellow" : "");
-      aEl.textContent = b.attempts + (b.failed > 0 ? " (" + b.failed + " fail)" : "");
-      ltxEl.textContent = b.lastTxHash
-        ? short(b.lastTxHash) + " · " + (b.lastTxStatus ?? "?") + " · $" + (b.lastTxGasUsd ?? 0).toFixed(3)
-        : "none yet";
-      ltxEl.title = b.lastTxAt ? "at " + b.lastTxAt + (b.lastTxProfitUsd != null ? " · profit $" + b.lastTxProfitUsd.toFixed(3) : "") : "";
-    } else {
-      bEl.textContent = "—";
-      aEl.textContent = "—";
-      ltxEl.textContent = "—";
-    }
-
-    const le = s.lastExecution;
-    const leEl = document.getElementById("r-last-exec");
-    if (le) {
-      leEl.textContent = le.success
-        ? "✅ " + (le.txHash ? short(le.txHash) : "") + (le.profitUsd != null ? " +$" + le.profitUsd.toFixed(2) : "") + (le.gasUsd != null ? " · gas $" + le.gasUsd.toFixed(3) : "")
-        : "✗ " + (le.note ?? "failed");
-      leEl.title = le.at + (le.kind ? " · " + le.kind : "");
-      leEl.className = "r-value " + (le.success ? "green" : "red");
-    } else {
-      leEl.textContent = "—";
-      leEl.className = "r-value";
-    }
-
-    const feed = s.feed ?? [];
-    if (JSON.stringify(feed) !== JSON.stringify(lastFeed)) {
-      lastFeed = feed;
-      renderFeed();
-    }
+    lastState = s;
+    render();
   } catch {
     document.getElementById("status-text").textContent = "disconnected";
     document.getElementById("status-dot").className = "dot off";
   }
 }
 
+// Initialize the default filter UI state, then start polling.
+document.querySelectorAll(".filt").forEach(b =>
+  b.classList.toggle("active", b.dataset.f === filterMode));
 poll();
 setInterval(poll, 2000);
 </script>

@@ -16,6 +16,8 @@ import { ETH_USD_ASSUMED, gasCostUsd, projectedProfitUsd, exitCapUsd, salePriceR
 import { dataIntegrityGate, preJevGates } from "./lib/gates.js";
 import { candidateContextHash } from "./lib/scanMath.js";
 import { isWatchPlayable, type WatchPlayableConfig } from "./lib/watch.js";
+import { USDC_ADDRESS, WETH_ADDRESS } from "./lib/prices.js";
+import { loadTreasury, type TreasuryToken } from "./lib/treasury.js";
 
 // Feed rows are keyed by (borrower, market): a borrower holding collateral in
 // two markets must not have one row overwrite the other.
@@ -82,6 +84,14 @@ const BUDGET: BudgetConfig = {
   dayCapUsd: Number(process.env.MAX_GAS_USD_PER_DAY ?? "10"),
   file: BUDGET_FILE,
 };
+
+// Tokens that can actually move value through this bot: gas (native ETH) and
+// the two assets the executor/profit path touches. Anything else is out of scope.
+const TREASURY_TOKENS: TreasuryToken[] = [
+  { symbol: "ETH", address: null, decimals: 18 },
+  { symbol: "USDC", address: USDC_ADDRESS, decimals: 6 },
+  { symbol: "WETH", address: WETH_ADDRESS, decimals: 18 },
+];
 const rpcLabel = `base:${sendRpc.replace(/^https?:\/\//, "").split("/")[0]}`;
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -224,6 +234,27 @@ async function main() {
       const ethPriceUsd = MODE === "SCAN-ONLY" ? 2700 : await fetchEthPrice(publicClient).catch(() => ETH_USD_ASSUMED);
       state.ethPriceUsd = ethPriceUsd;
       if (loopDeps) loopDeps.ethPriceUsd = ethPriceUsd;
+
+      // Where the money is (hot wallet vs executor contract). USD uses the
+      // live ETH price; scan-only fetches it too so the panel is never fiction.
+      try {
+        const priceForTreasury = MODE === "SCAN-ONLY"
+          ? await fetchEthPrice(publicClient).catch(() => ETH_USD_ASSUMED)
+          : ethPriceUsd;
+        const treasury = await loadTreasury({
+          publicClient,
+          walletAddress: wallet?.account.address ?? null,
+          contractAddress: (LIQUIDATOR || null) as `0x${string}` | null,
+          ethPriceUsd: priceForTreasury,
+          tokens: TREASURY_TOKENS,
+        });
+        state.treasury = {
+          updatedAt: new Date().toISOString(),
+          contractAddress: LIQUIDATOR || null,
+          wallet: treasury.wallet,
+          contract: treasury.contract,
+        };
+      } catch { /* keep the previous snapshot; never crash the loop for a dashboard read */ }
 
       console.log(`\n[${new Date().toISOString()}] Scanning...`);
       state.lastScanAt = new Date().toISOString();

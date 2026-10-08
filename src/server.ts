@@ -51,6 +51,21 @@ export interface FeedEntry {
   playable?: boolean;
 }
 
+/** One balance of a known token, USD-priced honestly (unknown tokens = null). */
+export interface TokenHolding {
+  symbol: string;
+  amount: number;
+  usd: number | null;
+}
+
+/** Where the money sits: the hot wallet vs the (zero-capital) executor contract. */
+export interface Treasury {
+  updatedAt: string | null;
+  wallet: TokenHolding[];
+  contract: TokenHolding[];
+  contractAddress: string | null;
+}
+
 export interface BotState {
   mode: string;
   running: boolean;
@@ -105,6 +120,8 @@ export interface BotState {
   } | null;
   /** Why the bot is not executing right now (honest idle reason) */
   idleReason: string | null;
+  /** Where the money is right now: hot wallet + executor contract balances. */
+  treasury: Treasury | null;
   lastExecution: {
     at: string;
     kind: string;
@@ -141,6 +158,7 @@ const state: BotState = {
   gasBudget: null,
   idleReason: null,
   lastExecution: null,
+  treasury: null,
 };
 
 export function getState(): BotState {
