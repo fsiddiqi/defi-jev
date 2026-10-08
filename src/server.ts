@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { LiquidationCandidate, JevDecision, ScanStats } from "./types.js";
+import { isExecutableChain } from "./lib/chains.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(__dirname, "..", "public");
@@ -177,7 +178,20 @@ export function addFeedEntry(entry: Omit<FeedEntry, "scans">): void {
   } else {
     state.feed.unshift({ ...entry, scans: 1 });
   }
-  if (state.feed.length > MAX_FEED) state.feed.length = MAX_FEED;
+  if (state.feed.length > MAX_FEED) {
+    // Pin executable-chain rows: discovery produces ~600 rows/cycle (Ethereum
+    // alone is ~500), so a naive head-trim evicts the ONLY rows that can ever
+    // sign a tx. Trim oldest non-executable first; executable rows only fall
+    // if they alone exceed the cap.
+    while (state.feed.length > MAX_FEED) {
+      let idx = -1;
+      for (let i = state.feed.length - 1; i >= 0; i--) {
+        if (!isExecutableChain(state.feed[i].chainId)) { idx = i; break; }
+      }
+      if (idx === -1) idx = state.feed.length - 1;
+      state.feed.splice(idx, 1);
+    }
+  }
 }
 
 export function updateFeedEntry(
