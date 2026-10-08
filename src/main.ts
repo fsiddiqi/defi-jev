@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createPublicClient, createWalletClient, fallback, http, type PublicClient, type WalletClient } from "viem";
 import { base } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
@@ -30,6 +31,33 @@ const feedRow = (c: LiquidationCandidate) => ({
 
 // Same (borrower, market) key for the Jev cache and decision map.
 const candidateKey = (c: LiquidationCandidate) => feedKey(feedRow(c));
+
+// ── Telegram digest schedule ──────────────────────────────────────────────────
+// Comma-separated LOCAL hours (e.g. "9,17"). One digest is sent when the clock
+// enters each hour, at most once per slot — the last send time is persisted so
+// restarts never double-post the same slot.
+const DIGEST_STATE_FILE = "data/last-digest.json";
+const DIGEST_HOURS = (process.env.TELEGRAM_DIGEST_HOURS ?? "9,17")
+  .split(",")
+  .map((s) => Number(s.trim()))
+  .filter((n) => Number.isInteger(n) && n >= 0 && n <= 23);
+
+function loadLastDigestAt(): number {
+  try {
+    return Number(JSON.parse(readFileSync(DIGEST_STATE_FILE, "utf8")).at) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveLastDigestAt(at: number): void {
+  try {
+    mkdirSync("data", { recursive: true });
+    writeFileSync(DIGEST_STATE_FILE, JSON.stringify({ at }));
+  } catch {
+    /* best-effort: a failed write only risks a duplicate digest */
+  }
+}
 
 // Jev gate mode: "confidence" (TypeSafe confidence) or "probability" (p(EXECUTE))
 const JEV_GATE_MODE = process.env.JEV_GATE_MODE ?? "probability";
@@ -211,9 +239,9 @@ async function main() {
   const MAX_JEV_FAILURES = 3;
   let cycleCount = 0;
 
-  // Periodic Telegram digest (TELEGRAM_DIGEST_HOURS=0 disables). Default 24h.
-  const DIGEST_INTERVAL_MS = Number(process.env.TELEGRAM_DIGEST_HOURS ?? "24") * 3600 * 1000;
-  let lastDigestAt = Date.now();
+  // Digest fires at the scheduled local hours (see DIGEST_HOURS); resume from the
+  // persisted slot so a restart never double-sends.
+  let lastDigestAt = loadLastDigestAt();
 
   const JEV_REEVAL_MS = Number(process.env.JEV_REEVAL_SEC ?? "1800") * 1000;
   const jevCache = new Map<string, { decision: JevDecision; at: number; contextHash: string }>();
@@ -558,14 +586,25 @@ async function main() {
       state.stats = { ...stats };
       state.jevStats = jevTotal;
 
-      if (DIGEST_INTERVAL_MS > 0 && nowMs - lastDigestAt >= DIGEST_INTERVAL_MS) {
-        lastDigestAt = nowMs;
-        const walletUsd = state.treasury?.wallet?.reduce((s, h) => s + (h.usd ?? 0), 0) ?? null;
-        notifyTelegram(
-          `📊 opps ${stats.jevExecute} · done ${stats.jevExecuteSettled} · ` +
-          `Jev $${jevTotal.totalCostUsd.toFixed(2)} · gas $${state.gasBudget?.spentUsd.toFixed(2)} · ` +
-          `wallet $${walletUsd != null ? walletUsd.toFixed(2) : "?"}`,
-        );
+      // Digest: once per scheduled local hour, catch-up-safe across restarts.
+      if (DIGEST_HOURS.length > 0) {
+        const nowDate = new Date(nowMs);
+        const due = DIGEST_HOURS.some((h) => {
+          const slot = new Date(nowDate);
+          slot.setHours(h, 0, 0, 0);
+          const start = slot.getTime();
+          return nowMs >= start && nowMs < start + 3600_000 && lastDigestAt < start;
+        });
+        if (due) {
+          lastDigestAt = nowMs;
+          saveLastDigestAt(nowMs);
+          const walletUsd = state.treasury?.wallet?.reduce((s, h) => s + (h.usd ?? 0), 0) ?? null;
+          notifyTelegram(
+            `📊 opps ${stats.jevExecute} · done ${stats.jevExecuteSettled} · ` +
+            `Jev $${jevTotal.totalCostUsd.toFixed(2)} · gas $${state.gasBudget?.spentUsd.toFixed(2)} · ` +
+            `wallet $${walletUsd != null ? walletUsd.toFixed(2) : "?"}`,
+          );
+        }
       }
 
       await pauseUntilNextScan(SCAN_INTERVAL_MS);
