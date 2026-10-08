@@ -18,6 +18,7 @@ import { candidateContextHash } from "./lib/scanMath.js";
 import { isWatchPlayable, type WatchPlayableConfig } from "./lib/watch.js";
 import { USDC_ADDRESS, WETH_ADDRESS } from "./lib/prices.js";
 import { loadTreasury, type TreasuryToken } from "./lib/treasury.js";
+import { notifyTelegram, isTelegramConfigured } from "./lib/telegram.js";
 
 // Feed rows are keyed by (borrower, market): a borrower holding collateral in
 // two markets must not have one row overwrite the other.
@@ -172,6 +173,19 @@ async function main() {
 
   startServer(Number(process.env.UI_PORT ?? 3000), process.env.UI_HOST ?? "0.0.0.0");
 
+  // Startup ping: tells the operator the bot is alive, armed, and where the money is.
+  notifyTelegram(
+    [
+      "🚀 <b>defi-jev started</b>",
+      `mode: <b>${MODE}</b>`,
+      `wallet: <code>${wallet?.account.address ?? "(none)"}</code>`,
+      `executor: <code>${LIQUIDATOR || "(none)"}</code> (Base only)`,
+      `AUTO gate: ${gate.passed && gate.settled ? "✅ passed (keeper-proof)" : "⛔ NOT passed"}`,
+      `gas budget: $${BUDGET.txCapUsd}/tx · $${BUDGET.dayCapUsd}/day`,
+      isTelegramConfigured() ? "" : "⚠️ Telegram not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)",
+    ].filter(Boolean).join("\n"),
+  );
+
   // Read clients per scanned chain (stateless; reused across cycles).
   const chainClients = buildChainClients();
   // Jev is only created in modes that actually consult the model — scan-only
@@ -206,6 +220,10 @@ async function main() {
   let consecutiveJevFailures = 0;
   const MAX_JEV_FAILURES = 3;
   let cycleCount = 0;
+
+  // Periodic Telegram heartbeat (TELEGRAM_DIGEST_HOURS=0 disables). Default 6h.
+  const DIGEST_INTERVAL_MS = Number(process.env.TELEGRAM_DIGEST_HOURS ?? "6") * 3600 * 1000;
+  let lastDigestAt = Date.now();
 
   const JEV_REEVAL_MS = Number(process.env.JEV_REEVAL_SEC ?? "1800") * 1000;
   const jevCache = new Map<string, { decision: JevDecision; at: number; contextHash: string }>();
@@ -408,6 +426,7 @@ async function main() {
             console.error(`  Jev error (${consecutiveJevFailures}/${MAX_JEV_FAILURES}): ${msg}`);
             if (consecutiveJevFailures >= MAX_JEV_FAILURES) {
               console.error(`  MAX JEV FAILURES REACHED - BLOCKING 30 MINUTES`);
+              notifyTelegram(`🛑 <b>Jev failing</b> — ${MAX_JEV_FAILURES} consecutive errors. Pausing 30 minutes.\nlast error: ${msg}`);
               await pauseUntilNextScan(30 * 60 * 1000);
               consecutiveJevFailures = 0;
             }
@@ -485,6 +504,11 @@ async function main() {
             state.idleReason = built.reason;
             updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: `on-chain: ${built.reason}` });
             console.log(`    💤 On-chain refusal: ${built.reason}`);
+            notifyTelegram(
+              `💤 <b>Jev said EXECUTE, on-chain refused</b>\n` +
+              `${candidate.collateralAsset}→${candidate.borrowAsset} · ${candidate.borrower.slice(0, 10)}…\n` +
+              `reason: ${built.reason}`,
+            );
             continue;
           }
           state.executor && (state.executor.status = "sending");
@@ -510,11 +534,22 @@ async function main() {
               gateResult: "passed",
               gateReason: `on-chain: ${result.txHash?.slice(0, 10)}… profit ${result.profitUsd != null ? "$" + result.profitUsd.toFixed(2) : "?"}`,
             });
+            notifyTelegram(
+              `✅ <b>Liquidation settled</b>\n` +
+              `${candidate.collateralAsset}→${candidate.borrowAsset} · ${candidate.borrower.slice(0, 10)}…\n` +
+              `profit: <b>${result.profitUsd != null ? "$" + result.profitUsd.toFixed(2) : "?"}</b> · gas: $${result.gasCostUsd?.toFixed(3) ?? "?"}\n` +
+              `tx: <code>${result.txHash}</code>`,
+            );
           } else {
             updateFeedEntry(feedRow(candidate), {
               gateResult: "blocked",
               gateReason: `execution failed: ${result.error}`,
             });
+            notifyTelegram(
+              `⚠️ <b>Liquidation failed</b>\n` +
+              `${candidate.collateralAsset}→${candidate.borrowAsset} · ${candidate.borrower.slice(0, 10)}…\n` +
+              `reason: ${result.error}${result.txHash ? `\ntx: <code>${result.txHash}</code>` : ""}`,
+            );
           }
           logExecution(result, stats, built.target.reason);
         }
@@ -544,6 +579,23 @@ async function main() {
       }
       state.stats = { ...stats };
       state.jevStats = jevTotal;
+
+      if (DIGEST_INTERVAL_MS > 0 && nowMs - lastDigestAt >= DIGEST_INTERVAL_MS) {
+        lastDigestAt = nowMs;
+        const t = state.treasury;
+        const money = t?.wallet?.length
+          ? t.wallet.map((h) => `${h.symbol} ${h.usd != null ? "$" + h.usd.toFixed(2) : "?"}`).join(", ")
+          : "—";
+        notifyTelegram(
+          `📊 <b>defi-jev heartbeat</b>\n` +
+          `uptime ${uptimeMin}min · cycle ${cycleCount}\n` +
+          `scanned ${SCANNED_CHAIN_IDS.length} chains · ${stats.candidatesFound} candidates\n` +
+          `Jev: ${jevTotal.totalCalls} calls, ${(jevTotal.totalTokensIn / 1000).toFixed(1)}K tok, $${jevTotal.totalCostUsd.toFixed(4)}\n` +
+          `executed: ${stats.executed} · refused on-chain: ${stats.jevExecuteRefusedByOnChain}\n` +
+          `gas: $${state.gasBudget?.spentUsd.toFixed(2)}/$${state.gasBudget?.capUsd.toFixed(2)} day\n` +
+          `wallet: ${money}`,
+        );
+      }
 
       await pauseUntilNextScan(SCAN_INTERVAL_MS);
 

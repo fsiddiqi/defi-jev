@@ -10,6 +10,11 @@
     "self-test": "tsx src/main.ts --self-test",
     "self-test:dry": "tsx src/main.ts --self-test --dry",
     "auto": "tsx src/main.ts",
+    "start": "pm2 start ecosystem.config.cjs",
+    "stop": "pm2 stop defi-jev",
+    "restart": "pm2 restart defi-jev",
+    "status": "pm2 status",
+    "logs": "pm2 logs defi-jev",
     "test": "vitest run"
   },
   "dependencies": {
@@ -20,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
+    "pm2": "^7.0.4",
     "solc": "^0.8.28",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
