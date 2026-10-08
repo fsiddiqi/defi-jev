@@ -155,7 +155,7 @@
 <section id="view-detailed" hidden>
 
   <div class="stats">
-    <div class="stat"><div class="label">Scanned (observations)</div><div class="value blue" id="s-found">0</div></div>
+    <div class="stat"><div class="label">Unique positions found</div><div class="value blue" id="s-found">0</div></div>
     <div class="stat"><div class="label">On a chain we can execute on</div><div class="value" id="s-onchain-chain">0</div></div>
     <div class="stat"><div class="label">Passed every rule → Jev</div><div class="value" id="s-passed-rules">0</div></div>
     <div class="stat"><div class="label">Blocked by rules (pre-Jev)</div><div class="value yellow" id="s-blocked-prejev">0</div></div>
@@ -401,7 +401,7 @@ function renderSimple(s) {
   const up = s.startTime ? ((Date.now() - s.startTime) / 60000).toFixed(0) + "m" : "—";
   const scanned = st.candidatesFound || 0;
   const stages = [
-    ["Scanned (observations)", scanned],
+    ["Unique positions found", scanned],
     ["On a chain we can execute on", st.onExecutableChain || 0],
     ["Passed every rule → Jev", st.jevJudged || 0],
     ["Jev said EXECUTE", st.jevExecute || 0],
