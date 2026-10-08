@@ -320,10 +320,10 @@ function renderHeader(s) {
 // Only three questions: can it make money right now, where is the money, and
 // how much has this run cost. Everything else lives on the Detailed tab.
 function simpleOpportunities(s) {
-  return (s.feed ?? []).filter(r =>
-    r.gateResult === "passed" ||
-    (r.decision && s.mode !== "PAPER" && r.decision.action === "EXECUTE")
-  );
+  // Only rows that cleared EVERY gate. A row can carry decision.action=EXECUTE
+  // and still be blocked at a later gate (post-Jev economics, on-chain quote),
+  // and counting those as "executable right now" was a misleading signal.
+  return (s.feed ?? []).filter(r => r.gateResult === "passed");
 }
 
 function renderSimple(s) {

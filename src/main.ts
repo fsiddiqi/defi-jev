@@ -238,6 +238,21 @@ async function main() {
     startTime: Date.now(),
   };
 
+  // Dedupe by opportunity identity (borrower + market). The same position is
+  // re-scanned every cycle; without this, one wallet (the Base RSS/USDC trap)
+  // showed up as "65". Each set records the unique keys that ever reached a
+  // stage, so every counter reads as "unique opportunities", never scan hits.
+  // Returns true only the FIRST time a key reaches a stage, so callers do the
+  // increment inside `if (countOnce(...))`.
+  const counted = new Map<string, Set<string>>();
+  const countOnce = (stage: string, key: string): boolean => {
+    let s = counted.get(stage);
+    if (!s) { s = new Set<string>(); counted.set(stage, s); }
+    if (s.has(key)) return false;
+    s.add(key);
+    return true;
+  };
+
   let consecutiveJevFailures = 0;
   const MAX_JEV_FAILURES = 3;
   let cycleCount = 0;
@@ -300,7 +315,12 @@ async function main() {
       state.executor && (state.executor.status = "scanning");
       const candidates = await scanAll(chainClients, ethPriceUsd);
       state.executor && (state.executor.status = "idle");
-      stats.candidatesFound += candidates.length;
+      for (const c of candidates) {
+        if (countOnce("found", candidateKey(c))) {
+          stats.candidatesFound++;
+          stats.candidatesEvaluated++;
+        }
+      }
       state.stats = { ...stats };
       state.jevStats = jev?.getStats() ?? null;
       console.log(`  Found ${candidates.length} candidates (seize >= $${CONFIG.minSeizeUsd})`);
@@ -326,7 +346,7 @@ async function main() {
       const decisionOf = new Map<string, JevDecision>();
 
       for (const candidate of candidates) {
-        stats.candidatesEvaluated++;
+        const key = candidateKey(candidate);
 
         addFeedEntry({
           timestamp: new Date().toISOString(),
@@ -362,7 +382,7 @@ async function main() {
           });
           continue;
         }
-        stats.onExecutableChain++;
+        if (countOnce("on-executable-chain", key)) stats.onExecutableChain++;
 
         if (candidate.watch && !isWatchPlayable(candidate, WATCH_PLAYABLE, ethPriceUsd)) {
           updateFeedEntry(feedRow(candidate), {
@@ -375,7 +395,7 @@ async function main() {
 
         const preJev = candidate.watch ? { pass: true as const, reason: "" } : preJevGates(candidate, CONFIG);
         if (!preJev.pass) {
-          stats.blockedPreJev++;
+          if (countOnce("blocked-pre-jev", key)) stats.blockedPreJev++;
           updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: `pre-Jev: ${preJev.reason}` });
           state.stats = { ...stats };
           console.log(`    Pre-Jev: ${preJev.reason}`);
@@ -384,17 +404,17 @@ async function main() {
 
         const integrity = dataIntegrityGate(candidate, Number(process.env.MAX_HF_MISMATCH_PCT ?? "0.30"));
         if (!integrity.pass) {
-          stats.blockedPreJev++;
+          if (countOnce("blocked-pre-jev", key)) stats.blockedPreJev++;
           updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: integrity.reason });
           state.stats = { ...stats };
           console.log(`    Data-integrity gate: ${integrity.reason} - skipping ${candidate.borrower.slice(0, 8)}`);
           continue;
         }
 
-        const cached = jevCache.get(candidateKey(candidate));
+        const cached = jevCache.get(key);
         const ctxHash = candidateContextHash(candidate);
         if (cached && (Date.now() - cached.at < JEV_REEVAL_MS || cached.contextHash === ctxHash)) {
-          decisionOf.set(candidateKey(candidate), cached.decision);
+          decisionOf.set(key, cached.decision);
           cachedJevDecisions++;
         }
         eligible.push(candidate);
@@ -425,7 +445,7 @@ async function main() {
               });
               // Audit line: the deterministic facts Jev's verdict is measured
             // against. "redundant" = rules would block this anyway (cap/0-profit);
-            // System One only earns its keep on rows where rules pass.
+            // the classifier only earns its keep on rows where the rules pass.
             const capUsd = exitCapUsd(candidate.exitLiquidityUsd);
             const ratio = candidate.dexPriceUsd !== null ? salePriceRatio(candidate) : null;
             const rulesViable = capUsd >= candidate.expectedSeizeUsd && projectedProfitUsd(candidate, ethPriceUsd) > 0;
@@ -451,7 +471,6 @@ async function main() {
               await pauseUntilNextScan(30 * 60 * 1000);
               consecutiveJevFailures = 0;
             }
-            stats.jevSkip++;
             updateFeedEntry(feedRow(chunk[0]), { gateResult: "blocked", gateReason: "jev call failed" });
             evaluated++;
           }
@@ -462,7 +481,8 @@ async function main() {
       }
       console.log(`  Jev: ${fresh.length} candidates in ${apiCalls} call(s), ${cachedJevDecisions} cached decisions`);
       for (const candidate of eligible) {
-        const jevDecision = decisionOf.get(candidateKey(candidate));
+        const key = candidateKey(candidate);
+        const jevDecision = decisionOf.get(key);
         if (!jevDecision) continue;
 
         updateFeedEntry(feedRow(candidate), {
@@ -488,10 +508,10 @@ async function main() {
           continue;
         }
 
-        if (jevDecision.action === "EXECUTE") stats.jevExecute++;
-        else if (jevDecision.action === "QUEUE") stats.jevQueue++;
-        else stats.jevSkip++;
-        stats.jevJudged++;
+        if (jevDecision.action === "EXECUTE") { if (countOnce("verdict-execute", key)) stats.jevExecute++; }
+        else if (jevDecision.action === "QUEUE") { if (countOnce("verdict-queue", key)) stats.jevQueue++; }
+        else { if (countOnce("verdict-skip", key)) stats.jevSkip++; }
+        if (countOnce("judged", key)) stats.jevJudged++;
         state.stats = { ...stats };
 
         const gateFail = postJevGates(jevDecision, candidate, CONFIG, ethPriceUsd);
@@ -508,7 +528,7 @@ async function main() {
         if (jevDecision.action === "EXECUTE") {
           if (MODE === "PAPER") {
             console.log(`    [PAPER] Would execute: ${candidate.borrower.slice(0, 8)} ${candidate.collateralAsset}→${candidate.borrowAsset} seize=$${candidate.expectedSeizeUsd.toFixed(2)} profit=$${projectedProfitUsd(candidate, ethPriceUsd).toFixed(2)}`);
-            stats.executed++;
+            if (countOnce("executed", key)) stats.executed++;
             updateFeedEntry(feedRow(candidate), { executed: true, gateReason: "paper — logged only" });
             continue;
           }
@@ -519,19 +539,19 @@ async function main() {
           // AUTO: build the execution target from FRESH on-chain truth + a real
           // exit quote. Any failure here is the honest last line of defense —
           // Jev's decision is advisory; only a real quote can sign a real tx.
-          if (!loopDeps) { stats.failed++; continue; }
+          if (!loopDeps) { if (countOnce("failed", key)) stats.failed++; continue; }
           state.executor && (state.executor.status = "simulating");
           const built = await buildExecutionTarget(publicClient, rpcLabel, MORPHO, candidate, ethPriceUsd, CONFIG);
           if (!built.ok) {
-            stats.failed++;
-            stats.jevExecuteRefusedByOnChain++; // System One said EXECUTE, System Two said no
+            if (countOnce("failed", key)) stats.failed++;
+            if (countOnce("refused-on-chain", key)) stats.jevExecuteRefusedByOnChain++;
             state.idleReason = built.reason;
             updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: `on-chain: ${built.reason}` });
             console.log(`    💤 On-chain refusal: ${built.reason}`);
             continue;
           }
           state.executor && (state.executor.status = "sending");
-          stats.onChainExecutable++;
+          if (countOnce("on-chain-executable", key)) stats.onChainExecutable++;
           const result = await executeLiquidation(loopDeps, built.target);
           state.executor && (state.executor.status = "idle");
 
@@ -547,7 +567,7 @@ async function main() {
             note: (result.success ? built.target.reason : result.error) ?? null,
           };
           if (result.success) {
-            stats.jevExecuteSettled++;
+            if (countOnce("settled", key)) stats.jevExecuteSettled++;
             updateFeedEntry(feedRow(candidate), {
               executed: true,
               executedForReal: true,
@@ -562,13 +582,21 @@ async function main() {
             });
             notifyTelegram(`❌ failed · ${result.error}`);
           }
-          logExecution(result, stats, built.target.reason);
+          logExecution(result, built.target.reason);
+          if (result.success) {
+            if (countOnce("executed", key)) stats.executed++;
+          } else if (result.error?.includes("revert") || result.error?.includes("unwind")) {
+            if (countOnce("reverted", key)) stats.reverted++;
+          } else {
+            if (countOnce("failed", key)) stats.failed++;
+          }
         }
       }
 
       cycleCount++;
       const nowMs = Date.now();
       state.cycle = cycleCount;
+      state.candidatesFound = stats.candidatesFound; // legacy top-level mirror; stats is the source of truth
       state.jevApiCallsLastCycle = apiCalls;
       if (fresh.length > 0) {
         state.lastJevBatchAt = new Date(nowMs).toISOString();
@@ -664,14 +692,11 @@ function postJevGates(decision: JevDecision, candidate: LiquidationCandidate, co
   return null;
 }
 
-function logExecution(result: { success: boolean; txHash?: `0x${string}`; gasUsed?: bigint; error?: string }, stats: ScanStats, note?: string) {
+function logExecution(result: { success: boolean; txHash?: `0x${string}`; gasUsed?: bigint; error?: string }, note?: string) {
   if (result.success) {
     console.log(`    ✅ EXECUTED ${result.txHash}  gas=${result.gasUsed}  (${note ?? ""})`);
-    stats.executed++;
   } else {
     console.log(`    ❌ FAILED: ${result.error}`);
-    if (result.error?.includes("revert") || result.error?.includes("unwind")) stats.reverted++;
-    else stats.failed++;
   }
 }
 
@@ -680,7 +705,7 @@ function printStats(stats: ScanStats, jevStats: { totalCalls: number; totalCostU
   console.log(`\n--- STATS (${elapsed.toFixed(1)}m) ---`);
   console.log(`  Found: ${stats.candidatesFound} | Evaluated: ${stats.candidatesEvaluated}`);
   console.log(`  Jev: EXECUTE=${stats.jevExecute} QUEUE=${stats.jevQueue} SKIP=${stats.jevSkip} (judged past all rules: ${stats.jevJudged})`);
-  console.log(`  One vs Two: EXECUTE refused by on-chain quote/sim=${stats.jevExecuteRefusedByOnChain} | settled=${stats.jevExecuteSettled}`);
+  console.log(`  Jev vs on-chain: EXECUTE refused by on-chain quote/sim=${stats.jevExecuteRefusedByOnChain} | settled=${stats.jevExecuteSettled}`);
   console.log(`  Executed: ${stats.executed} Reverted: ${stats.reverted} Failed: ${stats.failed}`);
   console.log(`  Jev calls: ${jevStats.totalCalls} | Cost: $${jevStats.totalCostUsd.toFixed(4)}`);
 }
