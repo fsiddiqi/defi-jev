@@ -116,6 +116,12 @@ export interface ScanStats {
   jevExecute: number;
   jevQueue: number;
   jevSkip: number;
+  /** candidates that survived ALL deterministic gates and were handed to Jev */
+  jevJudged: number;
+  /** System One said EXECUTE but System Two's on-chain quote/simulation refused */
+  jevExecuteRefusedByOnChain: number;
+  /** System One EXECUTE that survived every gate and settled on-chain */
+  jevExecuteSettled: number;
   executed: number;
   reverted: number;
   failed: number;

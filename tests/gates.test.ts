@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dataIntegrityGate, hfFromBalances, preJevGates } from "../src/lib/gates.js";
+import { dataIntegrityGate, hfFromBalances, preJevGates, realizabilityGate, DEFAULT_MAX_ORACLE_DISCOUNT_PCT } from "../src/lib/gates.js";
 import type { ExecutionConfig, LiquidationCandidate } from "../src/types.js";
 
 /** Build a candidate fixture; only fields the gates read matter. */
@@ -44,6 +44,17 @@ const CONFIG: ExecutionConfig = {
   marginBufferUsd: 10,
   gasCostPctOfProfitMax: 0.4,
   oracleDivergenceBps: 50,
+};
+
+/** A dex-priced exit that clears every realizability check: pool deep enough,
+ *  selling at the oracle price. "Clean" now means REALIZABLE — a candidate
+ *  with no exit used to pass preJevGates and got judged by Jev for nothing. */
+const REALIZABLE = {
+  priceSource: "dex" as const,
+  saleVenue: "aerodrome-v2 WETH/USDC volatile",
+  dexPriceUsd: 1.0,
+  oraclePriceUsd: 1.0,
+  exitLiquidityUsd: 100_000, // cap = $5,000 >> seize $100
 };
 
 describe("hfFromBalances", () => {
@@ -137,7 +148,80 @@ describe("preJevGates", () => {
     expect(v.pass).toBe(false);
     expect(v.reason).toContain("LTV spread too tight");
   });
-  it("passes an otherwise clean candidate", () => {
-    expect(preJevGates(cand({ healthFactor: 0.9 }), CONFIG).pass).toBe(true);
+  it("passes an otherwise clean (and realizable) candidate", () => {
+    expect(preJevGates(cand({ healthFactor: 0.9, ...REALIZABLE }), CONFIG).pass).toBe(true);
+  });
+  it("blocks a clean-shaped candidate with no exit venue (was: reached Jev, $0 by construction)", () => {
+    const v = preJevGates(cand({ healthFactor: 0.9 }), CONFIG);
+    expect(v.pass).toBe(false);
+    expect(v.reason).toContain("exit not verifiable");
+  });
+});
+
+describe("realizabilityGate - the arithmetic Jev used to do from its prompt", () => {
+  it("BLOCKS the live RSS regression: $1.4M seize against a $1.65 pool, dex price 36,900x below oracle", () => {
+    // Real feed row (2026-10-08): borrower 0xbF4F2939, RSS/USDC, HF 0.426.
+    const v = realizabilityGate(
+      cand({
+        collateralAsset: "RSS",
+        collateralTier: "long-tail",
+        healthFactor: 0.42637959712610474,
+        expectedSeizeUsd: 1_399_533.03,
+        priceSource: "dex",
+        saleVenue: "aerodrome-v2 RSS/USDC volatile",
+        dexPriceUsd: 0.000027062216411540926,
+        oraclePriceUsd: 0.999666448965446,
+        exitLiquidityUsd: 1.645061,
+      }),
+    );
+    expect(v.pass).toBe(false);
+    expect(v.reason).toContain("can't clear seize");
+  });
+
+  it("blocks a trap token whose dex price is a rounding error vs the oracle", () => {
+    const v = realizabilityGate(
+      cand({
+        ...REALIZABLE,
+        expectedSeizeUsd: 100, // small enough for the depth cap
+        dexPriceUsd: 0.5, // 50% below oracle — even the 1.15 bonus cannot cover it
+        oraclePriceUsd: 1.0,
+      }),
+    );
+    expect(v.pass).toBe(false);
+    expect(v.reason).toContain("below liquidation oracle");
+  });
+
+  it("passes a ratio just above the floor (dex 14% below oracle still clears max bonus 1/1.15)", () => {
+    expect(
+      realizabilityGate(cand({ ...REALIZABLE, dexPriceUsd: 0.86, oraclePriceUsd: 1.0 })).pass,
+    ).toBe(true);
+  });
+
+  it("blocks a ratio just below the floor (15% discount)", () => {
+    expect(DEFAULT_MAX_ORACLE_DISCOUNT_PCT).toBe(0.15);
+    expect(
+      realizabilityGate(cand({ ...REALIZABLE, dexPriceUsd: 0.84, oraclePriceUsd: 1.0 })).pass,
+    ).toBe(false);
+  });
+
+  it("tolerance is configurable", () => {
+    const c = cand({ ...REALIZABLE, dexPriceUsd: 0.97, oraclePriceUsd: 1.0 });
+    expect(realizabilityGate(c, 0.01).pass).toBe(false);
+    expect(realizabilityGate(c, 0.05).pass).toBe(true);
+  });
+
+  it("passes a tier-verified stable priced by oracle with no pool at all", () => {
+    const v = realizabilityGate(
+      cand({ collateralTier: "stable", priceSource: "oracle", dexPriceUsd: null, exitLiquidityUsd: null }),
+    );
+    expect(v.pass).toBe(true);
+  });
+
+  it("blocks when only a sliver of book exists (cap = 5% of depth)", () => {
+    const v = realizabilityGate(
+      cand({ ...REALIZABLE, expectedSeizeUsd: 5_000.01, exitLiquidityUsd: 100_000 }), // cap exactly $5,000
+    );
+    expect(v.pass).toBe(false);
+    expect(v.reason).toContain("cap $5000.00");
   });
 });
