@@ -1,0 +1,72 @@
+{
+  "name": "004-jev-liquidation-racing",
+  "title": "Jev Liquidation Racing (Minimal CLI)",
+  "description": "Minimal CLI for autonomous liquidation racing on Base. Jev gates entries on abandoned liquidation candidates (200+ block age); deterministic code executes atomic flash liquidations via IonicFlashLiquidation.sol. No server, no dashboard, no database.",
+  "status": "active",
+  "feature_branch": "feat/minimal-liquidation-jev",
+  "started_date": "2026-10-05",
+  "completed_date": null,
+  "completion_commit": null,
+  "priority": "P1",
+  "owner": "fsiddiqi",
+  "success_metrics": [
+    "Jev client: 100 mock candidates from real logs, zero schema errors",
+    "Paper: 50 trades, profit forecast MAPE < 35%",
+    "Real: 20 liquidations, net profit > $0, win rate > 60%",
+    "Calibration: ECE < 0.10 over 50+ resolved liquidations",
+    "Flat calibration → Jev removed → age filter wins is valid outcome"
+  ],
+  "dependencies": [],
+  "blocked_by": [],
+  "blocks": [],
+  "venue": {
+    "name": "Base (Morpho Blue + Ionic)",
+    "chain": "base",
+    "evm_compatible": true,
+    "viem_supported": true,
+    "flash_loan_provider": "Balancer Vault (0xBA12222222228d8Ba445958a75a0704d566BF2C8)",
+    "execution_contract": "IonicFlashLiquidation.sol (deployed)",
+    "collateral_swap": "Uniswap V3 SwapRouter02 (0x2626664c2603336E57B271c5C0b26F421741e481)"
+  },
+  "verified_baseline": {
+    "source": "defi-strategy production logs 2026-05-16 to 2026-06-21",
+    "opportunities_scanned": 2425,
+    "execution_attempts": 149539,
+    "execution_succeeded": 5,
+    "execution_reverted": 347,
+    "execution_failed": 147,
+    "execution_no_result": 149040,
+    "profit_is_upper_bound_only": true,
+    "unwind_equals_seize_rate": 1.0,
+    "placeholder_asset_rate": 1.0
+  },
+  "constraints": [
+    "Jev gates entries only; execution and all safety controls are deterministic code",
+    "Fully atomic single-transaction execution (no position registry, no hold time)",
+    "Code never filters on attractiveness; capital and data-integrity constraints only",
+    "Jev failures fail closed; no scan = no entry",
+    "CLI only — no server, no dashboard, no database, no metrics"
+  ],
+  "out_of_scope": [
+    "server/dashboard",
+    "database/persistence",
+    "telegram/alerting",
+    "metrics/prometheus",
+    "multi-venue support",
+    "governance participation"
+  ],
+  "reuse": {
+    "as_is": [],
+    "adapt": [
+      "IonicFlashLiquidation.sol (from defi-strategy)"
+    ],
+    "rewrite": [
+      "OpenRouter Jev client",
+      "Morpho Blue GraphQL scanner",
+      "Ionic chronic borrower scanner",
+      "Oracle freshness monitor",
+      "Balancer flash loan executor",
+      "CLI main loop"
+    ]
+  }
+}

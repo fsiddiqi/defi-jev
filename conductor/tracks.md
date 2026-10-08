@@ -1,31 +1,29 @@
 # Conductor Tracks
 
-Active development tracks for defi-jev.
+Development tracks for defi-jev, organised by state.
+
+```
+conductor/tracks/
+├── active/     in progress (max 1)
+├── backlog/    understood, not current priority
+├── blocked/    cannot proceed; needs an external unblock
+└── closed/     complete; kept for history, not maintained
+```
 
 ## Active
 
-- **[phase-1-core](tracks/phase-1-core/)** — Core architecture ✅ COMPLETE
-  - Jev classifier (mock + real API)
-  - Risk gate framework
-  - Paper executor
-  - Full test coverage
+| Track | Status | Priority | Summary |
+|---|---|---|---|
+| [004-jev-liquidation-racing](tracks/active/004-jev-liquidation-racing/) | 🟢 active | P1 | Minimal CLI: scan → Jev gates → atomic flash liquidation |
 
-## Planned
+## Backlog
 
-- **phase-2-aave** — Real Aave integration
-  - Account monitoring
-  - Liquidation execution
-  - Profit tracking (real contracts)
+None.
 
-- **phase-3-production** — Production hardening
-  - Error recovery
-  - Rate limiting
-  - Mempool monitoring
+## Blocked
 
-## Archived
+None.
 
-(None yet)
+## Closed
 
----
-
-See [workflow.md](workflow.md) for the spec-driven development process.
+None.
