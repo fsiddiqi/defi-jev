@@ -223,6 +223,9 @@ async function main() {
   const stats: ScanStats = {
     candidatesFound: 0,
     candidatesEvaluated: 0,
+    onExecutableChain: 0,
+    blockedPreJev: 0,
+    onChainExecutable: 0,
     jevExecute: 0,
     jevQueue: 0,
     jevSkip: 0,
@@ -359,6 +362,7 @@ async function main() {
           });
           continue;
         }
+        stats.onExecutableChain++;
 
         if (candidate.watch && !isWatchPlayable(candidate, WATCH_PLAYABLE, ethPriceUsd)) {
           updateFeedEntry(feedRow(candidate), {
@@ -371,7 +375,7 @@ async function main() {
 
         const preJev = candidate.watch ? { pass: true as const, reason: "" } : preJevGates(candidate, CONFIG);
         if (!preJev.pass) {
-          stats.jevSkip++;
+          stats.blockedPreJev++;
           updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: `pre-Jev: ${preJev.reason}` });
           state.stats = { ...stats };
           console.log(`    Pre-Jev: ${preJev.reason}`);
@@ -380,7 +384,7 @@ async function main() {
 
         const integrity = dataIntegrityGate(candidate, Number(process.env.MAX_HF_MISMATCH_PCT ?? "0.30"));
         if (!integrity.pass) {
-          stats.jevSkip++;
+          stats.blockedPreJev++;
           updateFeedEntry(feedRow(candidate), { gateResult: "blocked", gateReason: integrity.reason });
           state.stats = { ...stats };
           console.log(`    Data-integrity gate: ${integrity.reason} - skipping ${candidate.borrower.slice(0, 8)}`);
@@ -527,6 +531,7 @@ async function main() {
             continue;
           }
           state.executor && (state.executor.status = "sending");
+          stats.onChainExecutable++;
           const result = await executeLiquidation(loopDeps, built.target);
           state.executor && (state.executor.status = "idle");
 

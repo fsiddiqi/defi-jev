@@ -102,6 +102,9 @@
   #view-simple .sv-stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
   #view-simple .sv-label { color: var(--muted); font-size: 12px; }
   #view-simple .sv-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #view-simple .sv-surv { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  #view-simple .sv-stat.sv-final { border-color: var(--green); }
+  #view-simple .sv-stat.sv-final .sv-value { color: var(--green); }
   #view-simple .sv-empty { color: var(--muted); font-size: 14px; }
   #view-simple .sv-note { color: var(--muted); font-size: 12px; margin-top: 10px; }
   #view-simple .sv-big { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -143,7 +146,7 @@
   <h2 class="sv-h2">Money</h2>
   <div class="sv-card" id="sv-money"><div class="sv-empty">…</div></div>
 
-  <h2 class="sv-h2">Stats</h2>
+  <h2 class="sv-h2">Funnel — how candidates were filtered down</h2>
   <div class="sv-grid" id="sv-stats"></div>
   <div class="sv-note" id="sv-foot"></div>
 </section>
@@ -152,11 +155,14 @@
 <section id="view-detailed" hidden>
 
   <div class="stats">
-    <div class="stat"><div class="label">Found</div><div class="value blue" id="s-found">0</div></div>
-    <div class="stat"><div class="label">Evaluated</div><div class="value" id="s-evaluated">0</div></div>
-    <div class="stat"><div class="label">Jev: go</div><div class="value green" id="s-jev-execute">0</div></div>
+    <div class="stat"><div class="label">Scanned (observations)</div><div class="value blue" id="s-found">0</div></div>
+    <div class="stat"><div class="label">On a chain we can execute on</div><div class="value" id="s-onchain-chain">0</div></div>
+    <div class="stat"><div class="label">Passed every rule → Jev</div><div class="value" id="s-passed-rules">0</div></div>
+    <div class="stat"><div class="label">Blocked by rules (pre-Jev)</div><div class="value yellow" id="s-blocked-prejev">0</div></div>
+    <div class="stat"><div class="label">Verified executable on-chain</div><div class="value green" id="s-onchain-exec">0</div></div>
+    <div class="stat"><div class="label">Jev: EXECUTE</div><div class="value green" id="s-jev-execute">0</div></div>
     <div class="stat"><div class="label">Jev: hold</div><div class="value yellow" id="s-jev-queue">0</div></div>
-    <div class="stat"><div class="label">Jev: skip</div><div class="value" id="s-jev-skip">0</div></div>
+    <div class="stat"><div class="label">Jev: skip (verdict)</div><div class="value" id="s-jev-skip">0</div></div>
     <div class="stat"><div class="label">Executed</div><div class="value green" id="s-executed">0</div></div>
     <div class="stat"><div class="label">Reverted</div><div class="value red" id="s-reverted">0</div></div>
     <div class="stat"><div class="label">Jev tokens</div><div class="value" id="s-jev-tokens">0</div></div>
@@ -348,7 +354,7 @@ function renderSimple(s) {
   // ── Opportunities ──
   const elopps = document.getElementById("sv-opps");
   if (!opps.length) {
-    elopps.innerHTML = `<div class="sv-empty">None. ${(s.stats?.candidatesFound ?? 0).toLocaleString()} candidates scanned across ${(s.scannedChains ?? []).length} chains — none passed every gate yet. Blocked candidates never spend gas or Jev tokens.</div>`;
+    elopps.innerHTML = `<div class="sv-empty">None passed every gate. Funnel this run: <strong>${(s.stats?.candidatesFound ?? 0).toLocaleString()}</strong> scanned → <strong>${(s.stats?.onExecutableChain ?? 0).toLocaleString()}</strong> on a chain we can act on → <strong>${(s.stats?.jevJudged ?? 0).toLocaleString()}</strong> passed every rule → <strong>${(s.stats?.jevExecute ?? 0).toLocaleString()}</strong> Jev EXECUTE. Blocked candidates never spend gas or Jev tokens.</div>`;
   } else {
     elopps.innerHTML = `<table><thead><tr>
         <th>Market</th><th>Chain</th><th class="sv-num">Seize</th><th class="sv-num">Profit</th>
@@ -388,22 +394,38 @@ function renderSimple(s) {
       <div class="sv-note">Grand total ${usd(total(t.wallet) + total(t.contract))} · updated ${t.updatedAt ? new Date(t.updatedAt).toLocaleTimeString() : "—"}. Trades are zero-capital (Morpho pays the collateral out before the repay), so execution needs no wallet funds — only gas. Profit parks in the contract until withdrawn.</div>`;
   }
 
-  // ── Stats ──
+  // ── Funnel ──
+  // The point is NOT how many candidates were assessed, but how many survived
+  // each gate on the way down to a real, executable opportunity.
   const st = s.stats || {}, j = s.jevStats || {}, g = s.gasBudget || {};
   const up = s.startTime ? ((Date.now() - s.startTime) / 60000).toFixed(0) + "m" : "—";
-  const items = [
-    ["Candidates scanned", (st.candidatesFound || 0).toLocaleString()],
-    ["Judged past all rules", st.jevJudged || 0],
-    ["Jev calls", j.totalCalls || 0],
-    ["Jev spend (app epoch)", usd(j.totalCostUsd || 0)],
-    ["Executed", st.executed || 0],
-    ["Refused by on-chain quote", st.jevExecuteRefusedByOnChain || 0],
-    ["Gas spent today", usd(g.spentUsd || 0)],
-    ["Gas cap today", usd(g.capUsd || 0)],
-    ["Uptime", up],
+  const scanned = st.candidatesFound || 0;
+  const stages = [
+    ["Scanned (observations)", scanned],
+    ["On a chain we can execute on", st.onExecutableChain || 0],
+    ["Passed every rule → Jev", st.jevJudged || 0],
+    ["Jev said EXECUTE", st.jevExecute || 0],
+    ["Verified executable on-chain", st.onChainExecutable || 0],
+    ["Settled", st.jevExecuteSettled || 0],
   ];
-  document.getElementById("sv-stats").innerHTML = items.map(([l, v]) =>
-    `<div class="sv-stat"><div class="sv-label">${l}</div><div class="sv-value">${v}</div></div>`).join("");
+  const fmtPct = (v, d) => {
+    if (!d) return "—";
+    const p = v / d * 100;
+    return p >= 10 ? p.toFixed(1) + "%" : p >= 1 ? p.toFixed(1) + "%" : p > 0 ? "<1%" : "0%";
+  };
+  document.getElementById("sv-stats").innerHTML = stages.map(([l, v], i) =>
+    `<div class="sv-stat${i === stages.length - 1 ? " sv-final" : ""}">
+      <div class="sv-label">${l}</div>
+      <div class="sv-value">${v.toLocaleString()}</div>
+      ${i === 0 ? "" : `<div class="sv-surv">${fmtPct(v, scanned)} of scanned</div>`}
+    </div>`).join("") + `
+    <div class="sv-stat"><div class="sv-label">Blocked by rules (pre-Jev)</div><div class="sv-value">${(st.blockedPreJev || 0).toLocaleString()}</div></div>
+    <div class="sv-stat"><div class="sv-label">Refused by on-chain quote</div><div class="sv-value">${(st.jevExecuteRefusedByOnChain || 0).toLocaleString()}</div></div>
+    <div class="sv-stat"><div class="sv-label">Jev calls</div><div class="sv-value">${j.totalCalls || 0}</div></div>
+    <div class="sv-stat"><div class="sv-label">Jev spend (app epoch)</div><div class="sv-value">${usd(j.totalCostUsd || 0)}</div></div>
+    <div class="sv-stat"><div class="sv-label">Gas spent today</div><div class="sv-value">${usd(g.spentUsd || 0)}</div></div>
+    <div class="sv-stat"><div class="sv-label">Gas cap today</div><div class="sv-value">${usd(g.capUsd || 0)}</div></div>
+    <div class="sv-stat"><div class="sv-label">Uptime</div><div class="sv-value">${up}</div></div>`;
 
   const gate = s.selfTestGate;
   document.getElementById("sv-foot").textContent =
@@ -497,8 +519,11 @@ function renderFeed() {
 function renderDetailed(s) {
   const st = s.stats;
   if (st) {
-    document.getElementById("s-found").textContent = st.candidatesFound ?? 0;
-    document.getElementById("s-evaluated").textContent = st.candidatesEvaluated ?? 0;
+    document.getElementById("s-found").textContent = (st.candidatesFound ?? 0).toLocaleString();
+    document.getElementById("s-onchain-chain").textContent = (st.onExecutableChain ?? 0).toLocaleString();
+    document.getElementById("s-passed-rules").textContent = (st.jevJudged ?? 0).toLocaleString();
+    document.getElementById("s-blocked-prejev").textContent = (st.blockedPreJev ?? 0).toLocaleString();
+    document.getElementById("s-onchain-exec").textContent = (st.onChainExecutable ?? 0).toLocaleString();
     document.getElementById("s-jev-execute").textContent = st.jevExecute ?? 0;
     document.getElementById("s-jev-queue").textContent = st.jevQueue ?? 0;
     document.getElementById("s-jev-skip").textContent = st.jevSkip ?? 0;

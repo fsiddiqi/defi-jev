@@ -113,6 +113,12 @@ export interface ExecutionResult {
 export interface ScanStats {
   candidatesFound: number;
   candidatesEvaluated: number;
+  /** candidates on a chain we can actually execute on today (Base only) */
+  onExecutableChain: number;
+  /** candidates dropped at a deterministic gate BEFORE Jev (pre-Jev / integrity) */
+  blockedPreJev: number;
+  /** Jev EXECUTE that cleared the fresh on-chain quote/simulation (about to send) */
+  onChainExecutable: number;
   jevExecute: number;
   jevQueue: number;
   jevSkip: number;
