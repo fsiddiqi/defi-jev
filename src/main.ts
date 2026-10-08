@@ -174,6 +174,7 @@ async function main() {
   startServer(Number(process.env.UI_PORT ?? 3000), process.env.UI_HOST ?? "0.0.0.0");
 
   // Startup ping: tells the operator the bot is alive, armed, and where the money is.
+  console.log(isTelegramConfigured() ? "[telegram] alerts enabled" : "[telegram] disabled (set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)");
   notifyTelegram(
     [
       "🚀 <b>defi-jev started</b>",
