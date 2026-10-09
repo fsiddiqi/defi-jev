@@ -43,10 +43,10 @@ stateDiagram-v2
     Paper --> Kill : net excess < 0, no mid-test tuning
     Pass --> ExecutorBuild : broker executor + custody + calendar
     ExecutorBuild --> LiveSmall : IRA sub-account, scoped key, cap
-    LiveSmall --> Scale : 90d tight paper-live tracking error
+    LiveSmall --> Scaled : 90d tight paper-live tracking error
     LiveSmall --> BackToPaper : tracking error wide or incident
     BackToPaper --> Paper
-    Scale --> [*]
+    Scaled --> [*]
     Kill --> [*]
 ```
 
