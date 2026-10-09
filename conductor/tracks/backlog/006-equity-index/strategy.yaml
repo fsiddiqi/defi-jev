@@ -57,8 +57,20 @@ benchmarks:
 
 jev_verdict_template:
   fields: [date, regime, concentration, rebalance, prediction, confidence]
-  # prediction must name direction + level + date ("if bull, X > Y by Z date");
-  # scored in post-mortem. Missing prediction = invalid verdict.
+  # prediction MUST be observable: "TICKER OPERATOR PRICE by DATE"
+  # (">", "<", ">=", "<="; price numeric; date YYYY-MM-DD).
+  # e.g. "SPY > 500 by 2026-10-30" valid; "sentiment remains positive by Q4"
+  # invalid (vague predicate) -> verdict rejected at log time.
+  form: "{ticker} {operator} {price} by {date}"
   required: true
   frequency: weekly
   log_even_when_no_trade: true
+
+ledger:
+  # paper fills record three dates; live-vs-paper joins on settle_date.
+  fields: [ticker, signal_date, fill_date, settle_date, signal_px, fill_px, friction_usd, rule_citation]
+
+freeze:
+  # runner asserts sha256(strategy.yaml) == frozen_hash at start, refuses on mismatch.
+  # CI gate fails the build on registry drift during the window.
+  frozen_hash: null  # set alongside frozen_at when the window starts

@@ -62,7 +62,8 @@ stateDiagram-v2
 1. **Universe (kills W2).** US equities/ETFs with ≥$10M 30-day ADV and ≤5bps
    average spread; ETF wrappers ≥$500M AUM; crypto only via largest-fund wrappers;
    no leveraged/inverse. Membership re-verified monthly; a ticker that breaches
-   cutoffs is ejected at next rebalance, logged with cause.
+   cutoffs is ejected at the next rebalance trigger (cadence or drift) — never
+   mid-month, even in market stress. Ejection logged with cause.
 2. **Weights (kills W3).** sqrt(market-cap) base; ±25% tilt by 30d/90d momentum
    rank; RSI(14, daily closes) > 75 → halve weight, proceeds to cash. No funding,
    skew, or sentiment inputs — anything not in the registry cannot move a weight.
@@ -73,6 +74,9 @@ stateDiagram-v2
    portfolio; friction = turnover fraction × 6bps round-trip (3bps/side assumed,
    $0 regulatory dust — SEC fee waived under $500 notional, legs always below).
    Execute iff improvement > 2 × friction AND friction total < 10bps.
+   Distribution note: the formula uses portfolio totals deliberately — uneven
+   improvement (one position 50bps, rest dust) still executes. Alignment is
+   alignment; no per-leg veto exists to be gamed.
 4. **Drawdown.** −25% from trailing 126-day peak NAV pauses buys only.
 5. **Precedence (kills W7).** Trim beats tilt on the same ticker. Pause blocks
    buys only, never sells — a drawdown must never veto risk reduction. Context
@@ -92,9 +96,11 @@ stateDiagram-v2
 
 ## Jev (kills W1)
 
-Weekly verdict with mandatory dated prediction
-("if bull, X > Y by Z date"). No prediction = invalid verdict, excluded from the
-hit-rate ledger. Must NOT: size, trigger, delay, override, or explain away
+Weekly verdict with mandatory dated prediction in observable form:
+`ticker operator price by date` (e.g. "SPY > 500 by 2026-10-30" valid;
+"sentiment remains positive by Q4" invalid — vague predicate, rejected at log
+time). No prediction, or an unobservable one = invalid verdict, excluded from
+the hit-rate ledger. Must NOT: size, trigger, delay, override, or explain away
 tracking error. Template fields in `strategy.yaml`; logged with guideline version;
 scored in post-mortem.
 
@@ -122,7 +128,11 @@ class, invites benchmark shopping.
 ### Stage 1 — Paper (zero new infra)
 
 - [ ] `strategy.yaml` frozen + hash-checked; runner reads it exclusively
-- [ ] Paper fills to `data/paper/006-equity-index.jsonl`
+- [ ] Freeze enforcement: runner asserts file hash vs frozen hash at start and
+  refuses to run on mismatch; CI gate fails the build on registry drift
+- [ ] Paper fills to `data/paper/006-equity-index.jsonl`, recording signal date,
+  fill date, AND settle date (T+1); live-vs-paper comparison joins on settle
+  date so Stage 4 never compares unsettled paper against settled live
 - [ ] HODL pass/fail + taxable shadow ledger (25% ST, informational)
 
 ### Stage 2 — Decide
