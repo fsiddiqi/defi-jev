@@ -36,15 +36,16 @@
   },
   "constraints": [
     "Paper only: no signing, no broadcasting, no position registry, no hold time",
-    "Read-only data: public RPC, Morpho API, DEX factory/pool reads; stay within rate limits",
+    "Discovery sources are on-chain reads or near-real-time oracles; off-chain APIs are pointers only and re-verified on-chain before G0",
+    "One strategy at a time: next starts only when the current one is decided (Graduate/Park/Kill)",
+    "Procedural gates G0-G3 (code, deterministic) evaluate every opportunity; gates judge data and economics only, never executability",
+    "Only gate survivors reach Jev, each under a per-strategy guideline block; Jev ranks/flags, never authorizes",
     "Code never invents data: every logged opportunity cites its source (tx, pool state, API row)",
-    "Discovery is execution-agnostic: log first, judge realizability later in the graduating track",
-    "CLI/scripts only — no server, no dashboard, no database beyond flat paper logs"
+    "Dashboard radar panel shows every strategy's live funnel in facts only: numbers with sources and timestamps, no adjectives"
   ],
   "out_of_scope": [
     "any execution or capital deployment",
     "signing keys / private key handling",
-    "server/dashboard",
     "database/persistence beyond flat JSONL paper logs",
     "telegram/alerting",
     "promoting a strategy to live trading (that is the graduating track's job)"
@@ -54,6 +55,9 @@
       "src/scan.ts (Morpho multi-chain discovery)",
       "src/lib/prices.ts (DEX pool + oracle reads)",
       "src/lib/chains.ts (chain registry)",
+      "src/server.ts (/api/status + feed conventions)",
+      "public/index.html (Simple/Detailed tabs, funnel, tables)",
+      "src/jev/client.ts (decision contract + guideline style)",
       "docs/multichain-research.md (venues, factories, RPC notes)"
     ],
     "adapt": [
