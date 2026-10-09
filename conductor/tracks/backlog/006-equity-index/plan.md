@@ -18,11 +18,8 @@ flowchart TD
 
 ## Phase 0 — Strategy file (pre-registration)
 
-- [ ] Universe cutoffs (volume, spread, fund size for ETF wrappers) with values
-- [ ] Weight math (sqrt-cap, tilt bounds, trim rule, caps, cash band)
-- [ ] Bands, cost bar, drawdown rule, context caps — all numeric, all frozen
-- [ ] Benchmark definitions (HODL basket construction, Stoic proxy source)
-- [ ] Commit frozen file; any edit restarts the 90-day clock
+- [ ] Fill `strategy.yaml` values; commit frozen (`frozen_at` set) before day 1
+- [ ] Any edit restarts the 90-day clock — enforced by comparing file hash at run start vs frozen hash
 
 ## Phase 1 — Paper runner (zero new infra)
 

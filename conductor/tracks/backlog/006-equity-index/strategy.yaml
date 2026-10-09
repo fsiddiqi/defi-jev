@@ -1,0 +1,64 @@
+# Strategy Registry — 006 Equity Index Sleeve
+# SOURCE OF TRUTH for the 90-day paper window. Frozen on commit before day 1.
+# Any edit restarts the 90-day clock. Paper runner reads this file; no other
+# parameter source is permitted during the window.
+
+version: 1
+frozen_at: null  # set commit date when frozen; null = draft, window not started
+
+universe:
+  min_adv_usd: 10_000_000        # minimum 30-day average daily dollar volume
+  max_spread_bps: 5              # max average bid-ask spread, bps of mid
+  etf_min_aum_usd: 500_000_000   # ETF wrappers only at scale (tight NAV tracking)
+  allow_leveraged_inverse: false
+  crypto_only_via_etf: true
+
+weights:
+  base: sqrt_market_cap
+  momentum_lookback_days: [30, 90]
+  tilt_max_pct: 25               # +/-25% of base weight by momentum rank
+  rsi_period: 14                 # daily closes
+  rsi_trim_threshold: 75         # RSI > 75 -> halve weight, proceeds to cash
+  single_name_cap_pct: 25
+  cash_min_pct: 10
+  cash_max_pct: 40
+
+rebalance:
+  cadence_days: 30
+  # Drift trigger: max over positions of |w_actual - w_target| / w_target.
+  drift_trigger_pct: 15
+  # Cost bar: improvement = total absolute weight deviation in bps of portfolio;
+  # friction = turnover_fraction * roundtrip_friction_bps. Execute iff
+  # improvement > 2x friction AND friction_total < cap.
+  friction_multiple: 2.0
+  assumed_spread_bps_per_side: 3
+  roundtrip_friction_bps: 6
+  max_friction_total_bps: 10
+  regulatory_dust_usd: 0        # SEC fee waived <$500 notional; legs always below
+
+drawdown:
+  threshold_pct: -25             # from trailing 126-day (6mo) peak NAV
+  on_breach: pause_buys_only     # trims still execute; tilt adds suspended
+
+conflict_precedence:             # explicit, no discretion
+  - trim_beats_tilt              # RSI trim overrides momentum add on same ticker
+  - pause_blocks_buys_only       # drawdown pause never blocks a trim/sell
+  - bands_beat_context           # regime/flow context caps at +/-10%, never triggers
+
+tracking_error:                  # Stage 4 tightness definition
+  max_cumulative_deviation_bps: 75   # |R_live - R_paper| over 90 days
+  max_single_leg_slippage_bps: 25   # vs paper signal price
+
+benchmarks:
+  pass_fail: hodl_basket          # day-1 tickers/weights, buy-and-hold, dividends reinvested
+  context_only: [SPY]            # regime context; never pass/fail (no benchmark shopping)
+  tax_assumption_ira: 0
+  tax_shadow_taxable_st_rate: 0.25  # informational shadow ledger only
+
+jev_verdict_template:
+  fields: [date, regime, concentration, rebalance, prediction, confidence]
+  # prediction must name direction + level + date ("if bull, X > Y by Z date");
+  # scored in post-mortem. Missing prediction = invalid verdict.
+  required: true
+  frequency: weekly
+  log_even_when_no_trade: true

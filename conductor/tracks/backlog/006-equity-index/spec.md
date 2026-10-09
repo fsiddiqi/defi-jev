@@ -1,50 +1,55 @@
 # 006 Equity Index Sleeve — Spec
 
+## Premise
+
+Seven weaknesses were found in v1. This spec is rebuilt from them: each weakness
+below becomes a rule with a number, a precedence, or a kill condition. Anything
+not traceable to a weakness is cut.
+
+| # | Weakness | Hardened rule |
+|---|---|---|
+| W1 | Jev explains away bad weeks | Every verdict carries a dated prediction; missing prediction = invalid (§Jev) |
+| W2 | "Liquid" undefined | Universe cutoffs numeric in `strategy.yaml`; membership re-verified monthly (§Rules 1) |
+| W3 | RSI/funding vague | RSI(14, daily closes) only; funding clause deleted as unobservable (§Rules 2) |
+| W4 | Drift trigger ambiguous | Per-position relative deviation > 15% (§Rules 3) |
+| W5 | Cost bar gameable | Computable formula + 10bps hard cap (§Rules 3) |
+| W6 | "Tight tracking" undefined | 75bps cumulative / 25bps single-leg (§Stage 4) |
+| W7 | Trim vs drawdown conflict | Explicit precedence: trim beats tilt; pause blocks buys only (§Rules 5) |
+
 ## Strategy
 
-**Stoic-style systematic equity index on Robinhood rails, paper-first.**
-
-- **Venue:** Robinhood equities/ETFs for execution (crypto exposure via ETF wrappers,
-  never spot rotation); free public APIs for discovery math; this app for measurement.
-- **Method:** rules allocate, Jev narrates. Cap-weighted base + momentum tilt + topping
-  trim, monthly cadence or ±15% drift bands, per-trade cost bar.
-- **Capital:** live only in an IRA sub-account (rotation is short-term-gains toxic in
-  taxable); dedicated sub-account, scoped keys, spend cap, killswitch.
-- **No executor code until paper wins.** Stage 1 needs zero new infrastructure.
-
----
+Stoic-style systematic equity index on Robinhood rails, paper-first. Rules
+allocate, Jev narrates. Live only IRA-housed, after paper wins. No executor code
+until Stage 2 passes.
 
 ## Pipeline
 
 ```mermaid
 flowchart LR
-    D[Discovery math<br/>free public APIs] --> U[Universe<br/>liquid tickers + ETF wrappers]
-    U --> W[Weight engine<br/>sqrt-cap + tilt + trim]
-    W --> B[Band check<br/>monthly or drift > 15%?]
+    D[Discovery math<br/>free public APIs] --> U[Universe<br/>cutoffs in registry]
+    U --> W[Weight engine<br/>registry params]
+    W --> B[Band check<br/>30d or drift > 15%]
     B -->|no| HOLD[Hold + log]
-    B -->|yes| C[Cost bar<br/>gain > 2x friction?]
+    B -->|yes| C[Cost bar<br/>improvement > 2x friction, cap 10bps]
     C -->|no| HOLD
-    C -->|yes| X[Paper fill / live order<br/>staged, limit-capped]
+    C -->|yes| X[Paper fill / live order]
     X --> L[(Ledger<br/>lots + friction)]
-    L --> UI[Dashboard index panel<br/>vs HODL, always]
-    W --> J[Jev commentary<br/>weekly narrative only]
+    L --> UI[Dashboard<br/>vs HODL, always]
+    W --> J[Jev commentary<br/>dated prediction required]
     J --> UI
 ```
-
-Jev never touches the allocation path. If the rules alone don't beat HODL, there is
-no strategy.
 
 ## Lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> Paper
-    Paper --> Pass : 90d paper beats HODL net of fees+tax
-    Paper --> Kill : net excess < 0, no mid-test tuning
+    Paper --> Pass : 90d, net excess vs HODL > 0
+    Paper --> Kill : net excess ≤ 0, no retune on same data
     Pass --> ExecutorBuild : broker executor + custody + calendar
     ExecutorBuild --> LiveSmall : IRA sub-account, scoped key, cap
-    LiveSmall --> Scaled : 90d tight paper-live tracking error
-    LiveSmall --> BackToPaper : tracking error wide or incident
+    LiveSmall --> Scaled : tracking tight 90d
+    LiveSmall --> BackToPaper : tracking wide or any incident
     BackToPaper --> Paper
     Scaled --> [*]
     Kill --> [*]
@@ -52,89 +57,93 @@ stateDiagram-v2
 
 ---
 
-## Rules (deterministic, pre-registered before paper starts)
+## Rules (values in `strategy.yaml`, frozen before day 1)
 
-1. **Universe:** liquid US equities/ETFs (volume + spread cutoffs recorded in the
-   strategy file); crypto only via largest-fund ETF wrappers; no leveraged/inverse.
-2. **Weights:** sqrt(market-cap) base; ±25% momentum tilt by 30d/90d rank; topping
-   trim (RSI > 75 + extreme funding where observable) to half weight, proceeds to
-   cash sweep; single-name cap 25%; cash band 10–40% (the hedge).
-3. **Rebalance:** monthly cadence or ±15% drift, whichever first. Per-trade cost bar:
-   projected improvement > 2× round-trip friction (spread + regulatory dust).
-4. **Drawdown rule:** −25% from peak pauses new buys (hold, never panic-sell).
-5. **Context caps (Robinhood multi-asset role):** equity regime adjusts bands only;
-   ETF flow adjusts tilts within ±10%; neither triggers trades. Logged per read;
-   deleted after 90 days of no effect.
-6. **No mid-test tuning.** Parameters fixed for the 90-day paper window. Tuning
-   restarts the clock.
+1. **Universe (kills W2).** US equities/ETFs with ≥$10M 30-day ADV and ≤5bps
+   average spread; ETF wrappers ≥$500M AUM; crypto only via largest-fund wrappers;
+   no leveraged/inverse. Membership re-verified monthly; a ticker that breaches
+   cutoffs is ejected at next rebalance, logged with cause.
+2. **Weights (kills W3).** sqrt(market-cap) base; ±25% tilt by 30d/90d momentum
+   rank; RSI(14, daily closes) > 75 → halve weight, proceeds to cash. No funding,
+   skew, or sentiment inputs — anything not in the registry cannot move a weight.
+   Single-name cap 25%; cash band 10–40%.
+3. **Rebalance (kills W4, W5).** 30-day cadence or drift trigger: max over
+   positions of |w_actual − w_target| / w_target > 15%. Cost bar, computed per
+   rebalance and logged: improvement = total absolute weight deviation in bps of
+   portfolio; friction = turnover fraction × 6bps round-trip (3bps/side assumed,
+   $0 regulatory dust — SEC fee waived under $500 notional, legs always below).
+   Execute iff improvement > 2 × friction AND friction total < 10bps.
+4. **Drawdown.** −25% from trailing 126-day peak NAV pauses buys only.
+5. **Precedence (kills W7).** Trim beats tilt on the same ticker. Pause blocks
+   buys only, never sells — a drawdown must never veto risk reduction. Context
+   (regime/flow) modifies within ±10%, never triggers. Logged per read; deleted
+   after 90 days of no effect.
+6. **No mid-test tuning.** Registry frozen (`frozen_at` set, hash-checked at run
+   start). Any edit restarts the 90-day clock.
 
-## Gates (adapted from 005 style)
+## Gates
 
 | Gate | Checks |
 |---|---|
-| G0 data | quotes fresh (< 1 day for monthly cadence); corporate-action calendar current |
-| G1 integrity | no null splits-unadjusted prices; universe membership re-verified monthly |
-| G2 economics | leg clears cost bar; cash band respected; single-name cap respected |
-| G3 dedupe | one row per (strategy, ticker, date); re-sightings update, never duplicate |
+| G0 data | quotes < 1 day old; corporate-action calendar current |
+| G1 integrity | split-adjusted prices only; universe cutoffs re-checked monthly |
+| G2 economics | cost bar passes; cash band + single-name cap hold |
+| G3 dedupe | one row per (strategy, ticker, date) |
 
-## Jev guidelines (commentary only)
+## Jev (kills W1)
 
-Weekly narrative: regime description, concentration flags, rebalance rationale in
-plain language for the dashboard. Must NOT: size positions, trigger or delay trades,
-override bands, explain away tracking error. Verdicts logged with guideline version;
-falsifiable against subsequent outcomes like any 005 verdict.
+Weekly verdict with mandatory dated prediction
+("if bull, X > Y by Z date"). No prediction = invalid verdict, excluded from the
+hit-rate ledger. Must NOT: size, trigger, delay, override, or explain away
+tracking error. Template fields in `strategy.yaml`; logged with guideline version;
+scored in post-mortem.
 
-## Dashboard (facts only, existing conventions)
+## Dashboard
 
-Index panel in Simple view: index value vs HODL-same-basket (mandatory) vs
-target-date context; per-rebalance log (date, legs, friction paid, trigger, rule
-citation); optionality row (`exit-2: tested <date>`, stale-flagged). Every number
-sourced + timestamped; no adjectives.
+Index value vs HODL-same-basket (mandatory; day-1 tickers/weights, buy-hold,
+dividends reinvested) vs SPY context only. Per-rebalance log (date, legs,
+friction, trigger, rule citation). Optionality row (`exit-2: tested <date>`).
+Every number sourced + timestamped; no adjectives. No Stoic proxy — wrong asset
+class, invites benchmark shopping.
 
 ## Custody + execution (Stage 3+, never before)
 
-1. Dedicated Robinhood sub-account; scoped revocable API key (trade scope only on
-   the sub-account); no withdrawal scope anywhere in this stack.
-2. Spend cap per order + per month; killswitch (one call pauses all trading).
-3. Cash account (no PDT surface, respect T+1 settlement in the runner).
-4. Quarterly execution-path test: $1 order prove-out + cancel-path drill, logged.
-5. IRA-housed live capital; taxable paper may run in parallel for comparison but
-   never graduates to live taxable rotation.
+1. Dedicated sub-account; trade-scope-only revocable key; no withdrawal scope.
+2. Per-order + monthly spend caps; one-call killswitch.
+3. Cash account; runner is T+1 aware.
+4. Quarterly path test ($1 prove-out + cancel drill), logged.
+5. Live capital IRA-housed only. Broker code isolated under `src/broker/` with
+   zero imports into scan/execute paths.
 
 ---
 
 ## Acceptance Criteria
 
-### Stage 1 — Paper sleeve (zero new infra)
+### Stage 1 — Paper (zero new infra)
 
-- [ ] Strategy file: universe rules, weight math, bands, cost bar, drawdown rule —
-  committed before day 1, immutable for 90 days
-- [ ] Paper runner: ranking + band math in a script, fills to
-  `data/paper/006-equity-index.jsonl` (ticker, date, signal px, fill px, friction)
-- [ ] Benchmarks: HODL-same-basket (mandatory) + Stoic free-index proxy over the
-  same window, net of estimated fees and tax
+- [ ] `strategy.yaml` frozen + hash-checked; runner reads it exclusively
+- [ ] Paper fills to `data/paper/006-equity-index.jsonl`
+- [ ] HODL pass/fail + taxable shadow ledger (25% ST, informational)
 
 ### Stage 2 — Decide
 
-- [ ] Net excess > 0 after fees + estimated tax → Pass (executor build approved)
-- [ ] Net excess ≤ 0 → Kill with evidence; no tuning, no second window on same data
+- [ ] Net excess > 0 net of fees + IRA-zero-tax → Pass
+- [ ] ≤ 0 → Kill; no second window on same data
 
 ### Stage 3 — Executor + custody (only on Pass)
 
-- [ ] Broker order-state machine (place/ack/fill/partial/cancel/reject, T+1 aware)
-- [ ] Session calendar (hours, halts, splits/dividends processing)
-- [ ] Custody: scoped keys, sub-account isolation, spend caps, killswitch
+- [ ] Order-state machine, session calendar, custody stack per §Custody
 - [ ] Dashboard legs + optionality row; facts-only review
 
-### Stage 4 — Live small → scale
+### Stage 4 — Live small → scaled (kills W6)
 
-- [ ] 90 days live-small in IRA sub-account; tracking error vs paper tight → Scale
-- [ ] Tracking error wide, or any credential/session incident → BackToPaper
+- [ ] 90 days live-small; tight = |R_live − R_paper| < 75bps cumulative AND no
+  single-leg slippage vs signal > 25bps → Scaled
+- [ ] Wide tracking or any credential/session incident → BackToPaper
 
 ---
 
 ## Success Gate
 
-**A live equity index sleeve beating HODL net of all costs, running inside
- guardrails that survive a bad quarter.** Anything less stays paper — and paper
- that fails is a successful kill, not a failed track.
+**Live sleeve beating HODL net of all costs inside guardrails that survive a bad
+quarter.** Paper that fails is a successful kill, not a failed track.
