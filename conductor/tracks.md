@@ -18,7 +18,9 @@ conductor/tracks/
 
 ## Backlog
 
-None.
+| Track | Status | Priority | Summary |
+|---|---|---|---|
+| [005-opportunity-discovery](tracks/backlog/005-opportunity-discovery/) | 📋 backlog | P2 | Paper-only radar: discover trade opportunities regardless of executability; ranked evidence, graduates win their own track |
 
 ## Blocked
 

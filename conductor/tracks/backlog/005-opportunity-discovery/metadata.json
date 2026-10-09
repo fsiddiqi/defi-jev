@@ -1,0 +1,64 @@
+{
+  "name": "005-opportunity-discovery",
+  "title": "Opportunity Discovery Radar (execution-agnostic)",
+  "description": "Paper-only discovery track: inventory existing strategies and prospect new ones, measuring opportunity size/frequency/cadence with read-only evidence. No execution, no signing, no capital at risk. Output is a ranked, evidence-backed strategy backlog; winner(s) graduate to their own active track.",
+  "status": "backlog",
+  "feature_branch": null,
+  "started_date": null,
+  "completed_date": null,
+  "completion_commit": null,
+  "priority": "P2",
+  "owner": "fsiddiqi",
+  "success_metrics": [
+    "Every catalogued strategy has a 7-day paper log: candidate counts, sizes, cadence",
+    "Ranked strategy table with evidence (not opinion): frequency x median size x data confidence",
+    "At least one strategy graduates to an active-track proposal, or a written kill rationale per strategy",
+    "Zero signing, zero broadcasts, zero capital at risk for the entire track"
+  ],
+  "dependencies": [],
+  "blocked_by": [],
+  "blocks": [],
+  "venue": {
+    "name": "Read-only, multi-chain (same 14 Morpho API chains + DEX venues as available)",
+    "chain": "multi",
+    "evm_compatible": true,
+    "viem_supported": true,
+    "flash_loan_provider": null,
+    "execution_contract": null,
+    "collateral_swap": null
+  },
+  "verified_baseline": {
+    "source": "defi-jev production logs 2026-10-08 to 2026-10-09 (483 cycles/12h): ~1,690 candidates/cycle pass $100 seize, 0 survive the pre-Jev exit-liquidity gate",
+    "opportunities_scanned": null,
+    "execution_attempts": 0,
+    "execution_succeeded": 0,
+    "note": "Baseline is discovery-only. The 12h evidence says Morpho-Blue liquidation racing on the current venue set yields zero realizable candidates; this track asks what else exists."
+  },
+  "constraints": [
+    "Paper only: no signing, no broadcasting, no position registry, no hold time",
+    "Read-only data: public RPC, Morpho API, DEX factory/pool reads; stay within rate limits",
+    "Code never invents data: every logged opportunity cites its source (tx, pool state, API row)",
+    "Discovery is execution-agnostic: log first, judge realizability later in the graduating track",
+    "CLI/scripts only — no server, no dashboard, no database beyond flat paper logs"
+  ],
+  "out_of_scope": [
+    "any execution or capital deployment",
+    "signing keys / private key handling",
+    "server/dashboard",
+    "database/persistence beyond flat JSONL paper logs",
+    "telegram/alerting",
+    "promoting a strategy to live trading (that is the graduating track's job)"
+  ],
+  "reuse": {
+    "as_is": [
+      "src/scan.ts (Morpho multi-chain discovery)",
+      "src/lib/prices.ts (DEX pool + oracle reads)",
+      "src/lib/chains.ts (chain registry)",
+      "docs/multichain-research.md (venues, factories, RPC notes)"
+    ],
+    "adapt": [
+      "paper-log schema from scan/status lines into a shared JSONL radar format"
+    ],
+    "rewrite": []
+  }
+}
