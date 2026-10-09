@@ -21,6 +21,7 @@ conductor/tracks/
 | Track | Status | Priority | Summary |
 |---|---|---|---|
 | [005-opportunity-discovery](tracks/backlog/005-opportunity-discovery/) | 📋 backlog | P2 | Paper-only radar: discover trade opportunities regardless of executability; ranked evidence, graduates win their own track |
+| [006-equity-index](tracks/backlog/006-equity-index/) | 📋 backlog | P3 | Systematic equity index on Robinhood rails, paper-first; rules allocate, Jev narrates; live only IRA-housed after paper wins |
 
 ## Blocked
 

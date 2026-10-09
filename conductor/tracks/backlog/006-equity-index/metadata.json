@@ -1,0 +1,67 @@
+{
+  "name": "006-equity-index",
+  "title": "Equity Index Sleeve (Robinhood execution, paper-first)",
+  "description": "Stoic-style systematic equity index: rules allocate (cap-weight + momentum tilt + trim, monthly/drift bands), Jev narrates only. Paper sleeve first with zero new infra; broker executor, credential custody, and live trading only after paper beats its benchmark. Live capital IRA-housed; dedicated sub-account, scoped keys, spend caps, killswitch.",
+  "status": "backlog",
+  "feature_branch": "feat/equity-index",
+  "started_date": null,
+  "completed_date": null,
+  "completion_commit": null,
+  "priority": "P3",
+  "owner": "fsiddiqi",
+  "success_metrics": [
+    "90-day paper log beats holding the starting basket net of fees and estimated tax",
+    "Paper-vs-live tracking error tight for 90 days before any scale-up",
+    "Zero credential incidents; quarterly execution-path tests green",
+    "Live capital only in IRA sub-account with scoped key, spend cap, killswitch"
+  ],
+  "dependencies": [],
+  "blocked_by": [],
+  "blocks": [],
+  "venue": {
+    "name": "Robinhood equities/ETFs (incl. crypto-via-ETF) for execution; free public APIs for discovery math",
+    "chain": null,
+    "evm_compatible": false,
+    "viem_supported": false,
+    "flash_loan_provider": null,
+    "execution_contract": null,
+    "collateral_swap": null
+  },
+  "verified_baseline": {
+    "source": "fee research 2026-10-09: $0 equity commission, regulatory dust on sells (SEC waived <$500), fractional from $1; crypto spot spread ~0.85% (rotation-prohibitive); ETF expense ~0.2-0.25%/yr; IRA 3% Gold match",
+    "note": "No paper evidence yet. This track starts at zero evidence; Stage 1 creates it with no new infrastructure."
+  },
+  "constraints": [
+    "Paper first: no broker executor code until the paper sleeve beats its benchmark",
+    "Rules allocate, Jev narrates only; Jev never sizes, triggers, or vetoes",
+    "Live capital IRA-housed (rotation is short-term-gains toxic in taxable)",
+    "Dedicated sub-account, scoped revocable keys, spend cap, killswitch; trade the sub-account, never the main",
+    "One strategy at a time per repo workflow; this track waits behind 004/005",
+    "Dashboard facts only: every number sourced + timestamped, HODL comparison mandatory"
+  ],
+  "out_of_scope": [
+    "crypto spot rotation on Robinhood (0.85% spread — prohibitive, stays on-chain or static)",
+    "options/futures/event contracts (per-contract fees punish small size)",
+    "margin trading (PDT + interest; cash account, monthly bands)",
+    "mutual funds/bonds (venue doesn't offer)",
+    "tax advice (track lots mechanically; CPA questions stay human)"
+  ],
+  "reuse": {
+    "as_is": [
+      "005 paper-log schema + graduation contract (evidence promotes, narrative doesn't)",
+      "005 gate framework style (pure functions + reason strings)",
+      "src/server.ts (/api/status + feed conventions)",
+      "public/index.html (Simple/Detailed tabs, funnel, tables)",
+      "src/jev/client.ts (commentary-shaped Jev use only)"
+    ],
+    "adapt": [
+      "treasury/budget accounting extended to equity lots + friction tracking",
+      "funnel stages redefined for allocation (universe -> weighted -> band-trigger -> cost-bar -> filled)"
+    ],
+    "rewrite": [
+      "Broker executor (order-state machine: place/ack/fill/partial/cancel/reject, T+1 aware)",
+      "Session calendar (market hours, halts, corporate actions)",
+      "Credential custody (scoped keys, sub-account isolation, killswitch)"
+    ]
+  }
+}
